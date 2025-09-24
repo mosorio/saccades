@@ -19,11 +19,63 @@ from matplotlib import pyplot as plt
 from tqdm import tqdm
 from sklearn.metrics.pairwise import euclidean_distances
 from skimage.transform import warp_polar
+from itertools import combinations
+from itertools import combinations_with_replacement, permutations
 
 # import symbolic_model as solver
 from letters import get_alphabet, get_alphabet_5x5
 import utils
 
+@staticmethod
+def assign_unique_class_counts(classes, num_targets):
+    """
+    Assigns targets to classes such that no two classes have the same count.
+    Returns a list of class labels for each target.
+    """
+
+    n_classes = len(classes)
+    possible_counts = []
+    for counts in combinations(range(1, num_targets), n_classes - 1):
+        counts = (0,) + counts + (num_targets,)
+        class_counts = [counts[i+1] - counts[i] for i in range(n_classes)]
+        if len(set(class_counts)) == n_classes and all(c > 0 for c in class_counts):
+            possible_counts.append(class_counts)
+    if not possible_counts:
+        raise ValueError(f"Cannot assign {num_targets} targets to {n_classes} classes with all unique counts.")
+    chosen_counts = possible_counts[np.random.choice(len(possible_counts))]
+    labels = []
+    for cls, count in zip(classes, chosen_counts):
+        labels.extend([cls] * count)
+    np.random.shuffle(labels)
+    return labels
+
+@staticmethod
+def assign_minmax_class_counts(classes, num_targets):
+    """
+    Assigns targets to classes so that not all class counts are equal.
+    (Forbids the case where every class has the same count.)
+    Returns a list of class labels for each target.
+    """
+    n_classes = len(classes)
+    possible_counts = []
+
+    for counts in combinations_with_replacement(range(1, num_targets + 1), n_classes):
+        if sum(counts) == num_targets:
+            # Forbid all counts equal
+            if len(set(counts)) == 1:
+                continue
+            for perm in set(permutations(counts)):
+                possible_counts.append(perm)
+
+    if not possible_counts:
+        raise ValueError(f"Cannot assign {num_targets} targets to {n_classes} classes with not-all-equal counts.")
+
+    chosen_counts = possible_counts[np.random.choice(len(possible_counts))]
+    labels = []
+    for cls, count in zip(classes, chosen_counts):
+        labels.extend([cls] * count)
+    np.random.shuffle(labels)
+    return labels
 
 class DatasetGenerator:
     """Class for generating and glimpsing images with variable numbers of alphanumeric characeters."""
@@ -249,7 +301,7 @@ class DatasetGenerator:
 
         # logscale
         return shape_coords
-        
+    
     def get_shape_coords(self, glimpse_coords, shapes_set, distinctiveness,
                          objects2count, distractors):
         """Generate glimpse shape feature vectors.
@@ -293,22 +345,52 @@ class DatasetGenerator:
         item_slots = np.array([i for i in range(len(self.possible_centroids)) if (i in objects2count or i in distractors)])
         item_coords = np.array([self.possible_centroids[i] for i in item_slots])
         num = len(objects2count)
-        
-        # Assign a random shape to each object
+
         if distinctiveness == 0:  # All shapes in the image will be the same
             shape = np.random.choice(shapes_set)
             shape_assign = np.repeat(shape, num)
         else:
             shapes_copy = shapes_set.copy()
             random.shuffle(shapes_copy)
-            if distinctiveness == 1: # As distinctive as possible
-                shape_assign = np.tile(shapes_copy, int(np.ceil(num/len(shapes_set))))[:num]
-            elif distinctiveness == 0.6:
-                shape_subset = shapes_copy[:3] # 3 out of 4 shapes (assuming 4 total shapes)
-                shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
-            elif distinctiveness == 0.3:
-                shape_subset = shapes_copy[:2] # 2/4 shapes
-                shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
+            if getattr(self.conf, 'not_all_equal_class_counts', False):
+                # Use the not-all-equal assignment for each distinctiveness value
+                if distinctiveness == 1:
+                    shape_assign = assign_minmax_class_counts(shapes_copy, num)
+                elif distinctiveness == 0.6:
+                    shape_subset = shapes_copy[:3]
+                    shape_assign = assign_minmax_class_counts(shape_subset, num)
+                elif distinctiveness == 0.3:
+                    shape_subset = shapes_copy[:2]
+                    shape_assign = assign_minmax_class_counts(shape_subset, num)
+            else:
+                if distinctiveness == 1: # As distinctive as possible
+                    shape_assign = np.tile(shapes_copy, int(np.ceil(num/len(shapes_set))))[:num]
+                elif distinctiveness == 0.6:
+                    shape_subset = shapes_copy[:3] # 3 out of 4 shapes (assuming 4 total shapes)
+                    shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
+                elif distinctiveness == 0.3:
+                    shape_subset = shapes_copy[:2] # 2/4 shapes
+                    # if getattr(self.conf, 'unique_class_counts', False):
+                    #     # Only enforce unique class counts if the flag is set
+                    #     shape_assign = assign_unique_class_counts(shape_subset, num)
+                    # else:
+                    shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
+        
+        # # Assign a random shape to each object
+        # if distinctiveness == 0:  # All shapes in the image will be the same
+        #     shape = np.random.choice(shapes_set)
+        #     shape_assign = np.repeat(shape, num)
+        # else:
+        #     shapes_copy = shapes_set.copy()
+        #     random.shuffle(shapes_copy)
+        #     if distinctiveness == 1: # As distinctive as possible
+        #         shape_assign = np.tile(shapes_copy, int(np.ceil(num/len(shapes_set))))[:num]
+        #     elif distinctiveness == 0.6:
+        #         shape_subset = shapes_copy[:3] # 3 out of 4 shapes (assuming 4 total shapes)
+        #         shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
+        #     elif distinctiveness == 0.3:
+        #         shape_subset = shapes_copy[:2] # 2/4 shapes
+        #         shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
 
             # shape_assign = np.random.choice(shapes_set, size=num, replace=True)
         dist_map = {dist_loc: distractor_shape for dist_loc in distractors}
@@ -389,6 +471,7 @@ class DatasetGenerator:
         # while final_pass_count < min_pass_count or final_pass_count > max_pass_count:
         xy_coords, objects, noiseless_coords, to_count, distractors = self.get_xy_coords(num, n_disract, noise_level, challenge, policy)
         shape_coords, shape_map, shape_hist = self.get_shape_coords(xy_coords, shapes_set, distinctiveness, to_count, distractors)
+        min_count = np.min([c for c in shape_hist if c > 0]) if np.any(shape_hist) else 0
 
         # Initialize records
         # example = solver.GlimpsedImage(xy_coords, shape_coords, shape_map, shape_hist, objects, max_dist, num_range)
@@ -435,6 +518,7 @@ class DatasetGenerator:
         example_dict = {'glimpse_coords_1x1': xy_coords, 'symbolic_shape': shape_coords,
                         'numerosity_target': num,
                         'numerosity_dist': len(distractors),
+                        'numerosity_min': min_count,
                         'num_unique': n_unique,
                         # 'num_min': example.min_num,
                         # 'predicted_num': example.pred_num, 'count': example.count,
@@ -514,6 +598,7 @@ class DatasetGenerator:
                 "symbolic_shape": (["image", "glimpse", "character"], np.stack(df['symbolic_shape'].to_numpy())),
                 'numerosity_target': (["image"], np.stack(df['numerosity_target'].to_numpy())),
                 'numerosity_dist': (["image"], np.stack(df['numerosity_dist'].to_numpy())),
+                'numerosity_min': (["image"], np.stack(df['numerosity_min'].to_numpy())),
                 'num_unique': (["image"], np.stack(df['num_unique'].to_numpy())),
                 # 'num_min': (["image"], np.stack(df['num_min'].to_numpy())),
                 # 'predicted_num': (["image"], np.stack(df['predicted_num'].to_numpy())),
@@ -808,6 +893,12 @@ def main():
     parser.add_argument('--n_shapes', type=int, default=10, help='How many shapes to the relevant training and test sets span?')
     parser.add_argument('--same', action='store_true', default=False)
     parser.add_argument('--distinctive', type=float, default=0, help='How distinctive should items within a single image be? 0 means all the same shape, 1 means as distinctive as possible, 0.3 and 0.6 in between.')
+    parser.add_argument('--unique_class_counts', action='store_true', default=False,
+    help='If set, ensures each class has a unique count of targets in each image')
+    # parser.add_argument('--unique_max_class_counts', action='store_true', default=False,
+    # help='If set, ensures only the max class count is unique in each image')
+    parser.add_argument('--not_all_equal_class_counts', action='store_true', default=False,
+    help='If set, forbids all classes from having the same count in each image')
     # --distinctive would replace --same
     parser.add_argument('--grid', type=int, default=6)
     # parser.add_argument('--distract', action='store_true', default=False)
@@ -873,6 +964,7 @@ def main():
     data, data_pd = generator.add_logpolar_glimpses_xr(toydata, conf)
     
     dirname = 'datasets/image_sets'
+    # dirname = 'datasets/image_sets_min_max_2'
     fname_gw = f'{dirname}/num{conf.min_num}-{conf.max_num}_nl-{conf.noise_level}{trunc}{logscale}_{shapes}{distinctiveness}{challenge}_grid{conf.grid}_policy-{policy}_lum{conf.luminances}_{transform}{n_glimpses}{conf.size}'
     if not os.path.isdir(fname_gw):
             os.makedirs(fname_gw)
@@ -897,6 +989,7 @@ def main():
         plt.legend()
         plt.axis('off')
         plt.title(f'transform={transform}')
+        #plt.title(f'transform={transform}\numerosity_min={data_pd.iloc[idx]["numerosity_min"]}')
         
         plt.savefig(f'{fname_gw}/example_{transform}_{idx}.png', bbox_inches='tight', dpi=300, transparent=True, pad_inches=0)
         plt.close() 

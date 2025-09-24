@@ -7,7 +7,7 @@ from matplotlib import pyplot as plt
 import argparse
 
 # DATA_DIR = '/mnt/jessica/data0/Dropbox/saccades/rnn_tests/toysets/'
-DATA_DIR = '/mnt/jessica/data0/Dropbox/saccades/rnn_tests/datasets/image_sets/'
+DATA_DIR = '/Users/mosorio/Documents/ChrisWork/saccades/datasets/image_sets/'
 
 ### Training data
 # E01file = 'num1-5_nl-0.9_ESUZsame_distract123_grid6_policy-humanlike_lum[0.1, 0.4, 0.7]_logpolar_12_10000.nc'

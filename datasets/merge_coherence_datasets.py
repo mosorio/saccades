@@ -7,7 +7,7 @@ from matplotlib import pyplot as plt
 import argparse
 
 
-DATA_DIR = '/mnt/jessica/data0/Dropbox/saccades/rnn_tests/datasets/image_sets/'
+DATA_DIR = '/Users/mosorio/Documents/ChrisWork/saccades/datasets/image_sets_min_max/'
 
 ### Training data
 
