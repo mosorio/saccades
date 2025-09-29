@@ -397,7 +397,7 @@ def test_logpolar(loader, model, which_loss, sort):
 
 
 def plot_performance(tr_loss_mse, tr_acc, te_loss_mse, te_acc, base_name, ep):
-    fig_dir = 'figures/logpolar/ventral/'
+    fig_dir = 'figures_min/logpolar/ventral/'
     fig, (ax1, ax2) = plt.subplots(1, 2)
     ax1.plot(tr_loss_mse[:ep], label='Train')
     ax1.plot(te_loss_mse[:ep], label='Test')
@@ -446,7 +446,9 @@ def get_dataframe(size, shapes_set, config, lums):
 
     # fname = f'toysets/toy_dataset_num{min_num}-{max_num}_nl-{noise_level}_diff{min_pass_count}-{max_pass_count}_{shapes_set}_{size}{tet}.pkl'
     # fname_notet = f'toysets/toy_dataset_num{min_num}-{max_num}_nl-{noise_level}_diff{min_pass_count}-{max_pass_count}_{shapes_set}_{size}'
-    samee = 'same' if same else ''
+    
+    distinctiveness = 'distinct-0.3'
+
     # if config.distract:
     #     challenge = '_distract'
     # elif config.distract_corner:
@@ -467,7 +469,7 @@ def get_dataframe(size, shapes_set, config, lums):
     transform = 'logpolar_' if config.logpolar else f'gw6_'
     # fname_gw = f'{home}/toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}_{challenge}_grid{config.grid}_policy-cheat+jitter_lum{lums}_{transform}12_{size}.pkl'
     # fname_gw = f'{home}/toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}_{challenge}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}12_{size}'
-    fname_gw = f'{home}/datasets/image_sets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}_{challenge}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}{n_glimpses}_{size}'
+    fname_gw = f'{home}/datasets/image_sets_min_max/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{distinctiveness}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}{n_glimpses}_{size}'
     
     if os.path.exists(fname_gw+'.nc'):
         print(f'Loading saved dataset {fname_gw}.nc')
@@ -479,7 +481,7 @@ def get_dataframe(size, shapes_set, config, lums):
     else:
         try:
             transform = 'polar_'
-            fname_gw = f'{home}/datasets/image_sets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}_{challenge}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}{n_glimpses}_{size}'
+            fname_gw = f'{home}/datasets/image_sets_min_max/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{distinctiveness}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}{n_glimpses}_{size}'
             data = xr.open_dataset(fname_gw+'.nc')
         except:
             print(f'{fname_gw} does not exist. Exiting.')
@@ -591,7 +593,8 @@ def get_dataset_xr(dataframe, config):
         DataLoader: _description_
     """
     # dataframe['shape1'] = dataframe['shape']
-    
+
+    # Load proximity labels (symbolic_shape)
     if config.policy == 'humanlike':
         shape_array = dataframe['shape_coords_humanlike'].values
     else:
@@ -599,6 +602,9 @@ def get_dataset_xr(dataframe, config):
             shape_array = dataframe['symbolic_shape'].values
         except:
             shape_array = dataframe['shape'].values
+
+
+    # Optionally sort or select columns
     if config.sort:
         shape_arrayA = shape_array[:, :, 0]
         shape_array_rest = shape_array[:, :, 1:]
@@ -614,6 +620,8 @@ def get_dataset_xr(dataframe, config):
     print(f'label range: {shape_array.min()}-{shape_array.max()}')
     shape_label = torch.tensor(shape_array).float()
     # shape_label25 = torch.tensor(shape_array25).float()
+
+    # Load glimpse images
     if config.logpolar:
         # image_array = np.stack(dataframe['noised_image'], axis=0)
         # image_array -= image_array.min()
@@ -657,6 +665,7 @@ def get_dataset_xr(dataframe, config):
     # shape_label25 = shape_label25.view((nrows, 25))
     shape_label = shape_label.view(nrows, -1)
 
+    # Check for NaNs and package as TensorDataset
     if not(torch.isfinite(shape_input).all() and torch.isfinite(shape_label).all()):
         print('Found NaNs in the inputs or targets.')
         exit()
@@ -672,6 +681,12 @@ def get_model(config, device):
     input_size = 42*48 if config.logpolar else 36
     layer_width = 128 #1024 # config["layer_width"]
     # n_layers = 2 # config["n_layers"]
+    # Set output_size to the number of unique shapes/classes in training
+    # if config.challenge == 'distract012':
+    #     output_size = 2  # target vs. distractor
+    # elif config.challenge == 'minmax':
+    #     output_size = len(config.train_shapes)  # multi-class: one per shape
+    # output_size = config.n_classes if config.sort else 25
     output_size = 2 if config.sort else 25
     drop = config.dropout
     penult_size = 10#8
@@ -808,9 +823,9 @@ def main():
     # model_dir = 'models/toy/letters/ventral'
     # results_dir = 'results/toy/letters/ventral'
     # fig_dir = 'figures/toy/letters/ventral'
-    model_dir = 'models/logpolar/ventral'
-    results_dir = 'results/logpolar/ventral'
-    fig_dir = 'figures/logpolar/ventral'
+    model_dir = 'models_min/logpolar/ventral'
+    results_dir = 'results_min/logpolar/ventral'
+    fig_dir = 'figures_min/logpolar/ventral'
     dir_list = [model_dir, results_dir, fig_dir]
     for directory in dir_list:
         if not os.path.exists(directory):

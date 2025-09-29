@@ -27,35 +27,16 @@ from letters import get_alphabet, get_alphabet_5x5
 import utils
 
 @staticmethod
-def assign_unique_class_counts(classes, num_targets):
-    """
-    Assigns targets to classes such that no two classes have the same count.
-    Returns a list of class labels for each target.
-    """
-
-    n_classes = len(classes)
-    possible_counts = []
-    for counts in combinations(range(1, num_targets), n_classes - 1):
-        counts = (0,) + counts + (num_targets,)
-        class_counts = [counts[i+1] - counts[i] for i in range(n_classes)]
-        if len(set(class_counts)) == n_classes and all(c > 0 for c in class_counts):
-            possible_counts.append(class_counts)
-    if not possible_counts:
-        raise ValueError(f"Cannot assign {num_targets} targets to {n_classes} classes with all unique counts.")
-    chosen_counts = possible_counts[np.random.choice(len(possible_counts))]
-    labels = []
-    for cls, count in zip(classes, chosen_counts):
-        labels.extend([cls] * count)
-    np.random.shuffle(labels)
-    return labels
-
-@staticmethod
 def assign_minmax_class_counts(classes, num_targets):
     """
+    Arguments:
+        classes: list of class labels (e.g. [1, 3])
+        num_targets: total number of targets to assign (e.g. 10)
     Assigns targets to classes so that not all class counts are equal.
     (Forbids the case where every class has the same count.)
     Returns a list of class labels for each target.
     """
+    # print(f"Assigning {num_targets} targets to classes {classes} with not-all-equal counts.")
     n_classes = len(classes)
     possible_counts = []
 
@@ -75,6 +56,7 @@ def assign_minmax_class_counts(classes, num_targets):
     for cls, count in zip(classes, chosen_counts):
         labels.extend([cls] * count)
     np.random.shuffle(labels)
+    # print("labels:", labels)
     return labels
 
 class DatasetGenerator:
@@ -370,10 +352,6 @@ class DatasetGenerator:
                     shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
                 elif distinctiveness == 0.3:
                     shape_subset = shapes_copy[:2] # 2/4 shapes
-                    # if getattr(self.conf, 'unique_class_counts', False):
-                    #     # Only enforce unique class counts if the flag is set
-                    #     shape_assign = assign_unique_class_counts(shape_subset, num)
-                    # else:
                     shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
         
         # # Assign a random shape to each object
@@ -396,13 +374,16 @@ class DatasetGenerator:
         dist_map = {dist_loc: distractor_shape for dist_loc in distractors}
         shape_map = {object: shape for (object, shape) in zip(objects2count, shape_assign)}
         shape_map.update(dist_map)
+        # print(f'objects2count: {objects2count}, distractors: {distractors}')
+        # print(f'shape_assign: {shape_assign}, shape_map: {shape_map}')
         # shape_map = {object: shape for (object, shape) in zip(unique_objects, shape_assign)}
         shape_map_vector = np.ones((self.grid_size,)) * -1 # 9 for the 9 locations?
         for object in shape_map.keys():
             shape_map_vector[object] = shape_map[object]
         shape_hist = [sum(shape_map_vector == shape) for shape in range(self.n_shapes)]
-
+        # print(f'shape_map_vector: {shape_map_vector}, hist:{shape_hist}')
         shape_coords = self.calculate_proximity(glimpse_coords, item_coords, item_slots, shape_map)
+        # print(f'shape_coords:\n{shape_coords}')
         # shape_coords[glimpse_idx, shape_idx] = 1 - eu_dist[glimpse_idx, obj_idx]/min_dist
         # make sure each glimpse has at least some shape info (not if random glimpses)
         # assert np.all(shape_coords.sum(axis=1) > 0)
@@ -469,9 +450,12 @@ class DatasetGenerator:
         # TODO: Make this such that pass count range is only considered if included as cli argument. 
         # Otherwise, range set to be inclusive. That way don't need to bother with setting those cli arguments when not relevant
         # while final_pass_count < min_pass_count or final_pass_count > max_pass_count:
+        # print(f'Generating example with num: {num}, n_distract: {n_disract}, n_unique: {n_unique}, shapes_set: {shapes_set}, distinctiveness: {distinctiveness}, challenge: {challenge}, policy: {policy}')
         xy_coords, objects, noiseless_coords, to_count, distractors = self.get_xy_coords(num, n_disract, noise_level, challenge, policy)
+        # print(f'num: {num}, objects: {objects}, to_count: {to_count}, distractors: {distractors}')
         shape_coords, shape_map, shape_hist = self.get_shape_coords(xy_coords, shapes_set, distinctiveness, to_count, distractors)
-        min_count = np.min([c for c in shape_hist if c > 0]) if np.any(shape_hist) else 0
+        # print(f'shape_coords:\n{shape_coords.shape}, shape_map: {shape_map}, shape_hist: {shape_hist}')
+        min_count = np.min([c for c in shape_hist if c > 0]) if np.any(shape_hist) else 0 # minimum number of any shape in the image
 
         # Initialize records
         # example = solver.GlimpsedImage(xy_coords, shape_coords, shape_map, shape_hist, objects, max_dist, num_range)
@@ -510,6 +494,11 @@ class DatasetGenerator:
         # unique_objects = set(example.objects)
         all_objects = to_count + distractors
         filled_locations = [1 if i in all_objects else 0 for i in range(self.grid_size)]
+        locations_class = np.zeros(self.grid_size, dtype=int)
+        for slot, class_idx in shape_map.items():
+            locations_class[slot] = class_idx
+            # {slot} class {class_idx}')
+        # print(locations_class)
         locations_2count = [1 if i in to_count else 0 for i in range(self.grid_size)]
         locations_dist = [1 if i in distractors else 0 for i in range(self.grid_size)]
         # these won't be exactly correct because of the small outerborder.
@@ -518,11 +507,12 @@ class DatasetGenerator:
         example_dict = {'glimpse_coords_1x1': xy_coords, 'symbolic_shape': shape_coords,
                         'numerosity_target': num,
                         'numerosity_dist': len(distractors),
-                        'numerosity_min': min_count,
+                        'numerosity_min': min_count, # minimum number of any shape in the image
                         'num_unique': n_unique,
                         # 'num_min': example.min_num,
                         # 'predicted_num': example.pred_num, 'count': example.count,
                         'locations': filled_locations,
+                        'locations_class': locations_class,
                         'locations_count': locations_2count,
                         'locations_distract': locations_dist,
                         'object_coords': noiseless_coords,
@@ -603,6 +593,7 @@ class DatasetGenerator:
                 # 'num_min': (["image"], np.stack(df['num_min'].to_numpy())),
                 # 'predicted_num': (["image"], np.stack(df['predicted_num'].to_numpy())),
                 'locations': (["image", "slot"], np.stack(df['locations'].to_numpy())),
+                'locations_class': (["image", "slot"], np.stack(df['locations_class'].to_numpy())),
                 'locations_count': (["image", "slot"], np.stack(df['locations_count'].to_numpy())),
                 'locations_distract': (["image", "slot"], np.stack(df['locations_distract'].to_numpy())),
                 'object_coords': (["image", "glimpse", "coordinates"], np.stack(df['object_coords'].to_numpy())),
@@ -963,8 +954,8 @@ def main():
     # data = generator.add_logpolar_glimpses_pandas(toydata, conf)
     data, data_pd = generator.add_logpolar_glimpses_xr(toydata, conf)
     
-    dirname = 'datasets/image_sets'
-    # dirname = 'datasets/image_sets_min_max_2'
+    # dirname = 'datasets/image_sets'
+    dirname = 'datasets/image_sets_min_max'
     fname_gw = f'{dirname}/num{conf.min_num}-{conf.max_num}_nl-{conf.noise_level}{trunc}{logscale}_{shapes}{distinctiveness}{challenge}_grid{conf.grid}_policy-{policy}_lum{conf.luminances}_{transform}{n_glimpses}{conf.size}'
     if not os.path.isdir(fname_gw):
             os.makedirs(fname_gw)

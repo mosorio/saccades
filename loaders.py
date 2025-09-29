@@ -108,7 +108,10 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
     half_idx = list(range(nex))  # for mixed datasets with half free half fixed
     random.shuffle(half_idx)
     ### NUMBER LABEL ###
-    if target_type == 'all':
+    if target_type == 'min': # if only want to count the minimum numerosity
+        count_num = torch.tensor(dataset['numerosity_min'].values).long().to(config.device)
+        dist_num = torch.zeros_like(count_num).long().to(config.device)
+    elif target_type == 'all':
         total_num = np.sum(dataset['locations'].values, axis=1)
         target = torch.tensor(total_num).long().to(config.device)
         count_num = target
