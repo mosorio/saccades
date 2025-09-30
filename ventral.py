@@ -58,6 +58,14 @@ criterion_mse = nn.MSELoss()
 criterion_mse_noreduce = nn.MSELoss(reduction='none')
 criterion_bce = nn.BCEWithLogitsLoss()
 
+def align_outputs_targets(pred, target, config): 
+    if config.sort: 
+        return pred[:, :2], target[:, :2] 
+    elif config.multiclass: 
+        return pred, target[:, config.train_shapes] 
+    else: 
+        return pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES]
+
 
 def load_data(config, device):
     # Prepare datasets and torch dataloaders
@@ -91,8 +99,8 @@ def train_model(model, optimizer, scheduler, loaders, config, device):
     #     tr_loss_mse[0], tr_loss_ce[0], tr_loss[0], tr_acc[0] = test_logpolar(train_loader, model, config.loss, config.sort)
     #     te_loss_mse[0], te_loss_ce[0], te_loss[0], te_acc[0] = test_logpolar(test_loader, model, config.loss, config.sort)
     # else:
-    tr_loss_mse[0], tr_loss_ce[0], tr_loss[0], tr_acc[0] = test(train_loader, model, config.loss, config.sort, device)
-    te_loss_mse[0], te_loss_ce[0], te_loss[0], te_acc[0] = test(test_loader, model, config.loss, config.sort, device)
+    tr_loss_mse[0], tr_loss_ce[0], tr_loss[0], tr_acc[0] = test(train_loader, model, config.loss, config, device)
+    te_loss_mse[0], te_loss_ce[0], te_loss[0], te_acc[0] = test(test_loader, model, config.loss, config, device)
     print('Before training')
     print(f'Train: {tr_loss_mse[0]:.4}/{tr_loss_ce[0]:.4}/{tr_loss[0]:.4}/{tr_acc[0]:.3}%')
     print(f'Test: {te_loss_mse[0]:.4}/{te_loss_ce[0]:.4}/{te_loss[0]:.4}/{te_acc[0]:.3}%')
@@ -102,8 +110,8 @@ def train_model(model, optimizer, scheduler, loaders, config, device):
         #     tr_res = train_one_epoch_logpolar(train_loader, model, optimizer, config.loss, config.sort)
         #     te_res = test_logpolar(test_loader, model, config.loss, config.sort)
         # else:
-        tr_res = train_one_epoch(train_loader, model, optimizer, config.loss, config.sort, device)
-        te_res = test(test_loader, model, config.loss, config.sort, device)
+        tr_res = train_one_epoch(train_loader, model, optimizer, config.loss, config, device)
+        te_res = test(test_loader, model, config.loss, config, device)
         
         tr_loss_mse[ep+1], tr_loss_ce[ep+1], tr_loss[ep+1], tr_acc[ep+1] = tr_res
         te_loss_mse[ep+1], te_loss_ce[ep+1], te_loss[ep+1], te_acc[ep+1] = te_res
@@ -129,7 +137,7 @@ def train_model(model, optimizer, scheduler, loaders, config, device):
     return results
 
 
-def train_one_epoch(train_loader, model, optimizer, which_loss, sort, device):
+def train_one_epoch(train_loader, model, optimizer, which_loss, config, device):
     """Iterate through all mini-batches for one epoch of training."""
     model.train()
     mse_loss = 0
@@ -143,16 +151,22 @@ def train_one_epoch(train_loader, model, optimizer, which_loss, sort, device):
         optimizer.zero_grad()
         batch_n += 1
         pred, _ = model(input)
-        if sort:
-            # 0th output for bce loss - detect As
-            # 1st and 2nd outputs for MSE loss
-            mse = criterion_mse(pred[:, :2], target[:, :2])
-            ce = criterion_ce(pred[:, :2], target[:, :2])
-            ce_noprob = criterion_ce(pred[:, :2], torch.argmax(target[:, :2], 1))
-        else:
-            mse = criterion_mse(pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES])
-            ce = criterion_ce(pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES])
-            ce_noprob = criterion_ce(pred[:, TRAIN_SHAPES], torch.argmax(target[:, TRAIN_SHAPES], 1))
+
+        pred, target = align_outputs_targets(pred, target, config)
+        mse = criterion_mse(pred, target)
+        ce = criterion_ce(pred, target)
+        ce_noprob = criterion_ce(pred, torch.argmax(target, 1))
+
+        # if sort:
+        #     # 0th output for bce loss - detect As
+        #     # 1st and 2nd outputs for MSE loss
+        #     mse = criterion_mse(pred[:, :2], target[:, :2])
+        #     ce = criterion_ce(pred[:, :2], target[:, :2])
+        #     ce_noprob = criterion_ce(pred[:, :2], torch.argmax(target[:, :2], 1))
+        # else:
+        #     mse = criterion_mse(pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES])
+        #     ce = criterion_ce(pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES])
+        #     ce_noprob = criterion_ce(pred[:, TRAIN_SHAPES], torch.argmax(target[:, TRAIN_SHAPES], 1))
         
         # ce = criterion(pred, target)
         # ce = criterion_bce(pred[:, 0], target[:, 0])
@@ -188,12 +202,11 @@ def train_one_epoch(train_loader, model, optimizer, which_loss, sort, device):
         loss.backward()
         # torch.nn.utils.clip_grad_norm_(model.parameters(), 2)
         optimizer.step()
-        if sort:
-            argmax_labels = torch.argmax(target[:, :2], 1)
-            argmax_pred = torch.argmax(pred[:, :2], 1)
-        else:
-            argmax_labels = torch.argmax(target[:, TRAIN_SHAPES], 1)
-            argmax_pred = torch.argmax(pred[:, TRAIN_SHAPES], 1)
+
+    
+        argmax_labels = torch.argmax(target, 1)
+        argmax_pred = torch.argmax(pred, 1)
+
         correct += (argmax_pred == argmax_labels).sum().item()
         n += target.size(0)
         mse_loss += mse.item()
@@ -207,7 +220,7 @@ def train_one_epoch(train_loader, model, optimizer, which_loss, sort, device):
     return mse_loss, ce_loss, tot_loss, acc
 
 
-def train_one_epoch_logpolar(train_loader, model, optimizer, which_loss, sort):
+def train_one_epoch_logpolar(train_loader, model, optimizer, which_loss, config):
     """Iterate through all mini-batches for one epoch of training."""
     model.train()
     mse_loss = 0
@@ -222,16 +235,23 @@ def train_one_epoch_logpolar(train_loader, model, optimizer, which_loss, sort):
             optimizer.zero_grad()
             batch_n += 1
             pred, _ = model(input, xx[:, glimpse_idx], yy[:, glimpse_idx])
-            if sort:
-                # 0th output for bce loss - detect As
-                # 1st and 2nd outputs for MSE loss
-                mse = criterion_mse(pred[:, :2], target[:, glimpse_idx, :2])
-                ce = criterion_ce(pred[:, :2], target[:, glimpse_idx, :2])
-                ce_noprob = criterion_ce(pred[:, :2], torch.argmax(target[:, glimpse_idx, :2], 1))
-            else:
-                mse = criterion_mse(pred[:, TRAIN_SHAPES], target[:, glimpse_idx, TRAIN_SHAPES])
-                ce = criterion_ce(pred[:, TRAIN_SHAPES], target[:, glimpse_idx, TRAIN_SHAPES])
-                ce_noprob = criterion_ce(pred[:, TRAIN_SHAPES], torch.argmax(target[:, glimpse_idx, TRAIN_SHAPES], 1))
+
+            pred, target = align_outputs_targets(pred, target, config)
+
+            mse = criterion_mse(pred, target[:, glimpse_idx, :])
+            ce = criterion_ce(pred, target[:, glimpse_idx, :])
+            ce_noprob = criterion_ce(pred, torch.argmax(target[:, glimpse_idx, :], 1))
+
+            # if sort:
+            #     # 0th output for bce loss - detect As
+            #     # 1st and 2nd outputs for MSE loss
+            #     mse = criterion_mse(pred[:, :2], target[:, glimpse_idx, :2])
+            #     ce = criterion_ce(pred[:, :2], target[:, glimpse_idx, :2])
+            #     ce_noprob = criterion_ce(pred[:, :2], torch.argmax(target[:, glimpse_idx, :2], 1))
+            # else:
+            #     mse = criterion_mse(pred[:, TRAIN_SHAPES], target[:, glimpse_idx, TRAIN_SHAPES])
+            #     ce = criterion_ce(pred[:, TRAIN_SHAPES], target[:, glimpse_idx, TRAIN_SHAPES])
+            #     ce_noprob = criterion_ce(pred[:, TRAIN_SHAPES], torch.argmax(target[:, glimpse_idx, TRAIN_SHAPES], 1))
             
 
             lambd = .5
@@ -251,12 +271,17 @@ def train_one_epoch_logpolar(train_loader, model, optimizer, which_loss, sort):
             loss.backward()
             # torch.nn.utils.clip_grad_norm_(model.parameters(), 2)
             optimizer.step()
-            if sort:
-                argmax_labels = torch.argmax(target[:, glimpse_idx, :2], 1)
-                argmax_pred = torch.argmax(pred[:, :2], 1)
-            else:
-                argmax_labels = torch.argmax(target[:, glimpse_idx, TRAIN_SHAPES], 1)
-                argmax_pred = torch.argmax(pred[:, TRAIN_SHAPES], 1)
+
+            argmax_labels = torch.argmax(target[:, glimpse_idx, :], 1)
+            argmax_pred = torch.argmax(pred, 1)
+
+            # if sort:
+            #     argmax_labels = torch.argmax(target[:, glimpse_idx, :2], 1)
+            #     argmax_pred = torch.argmax(pred[:, :2], 1)
+            # else:
+            #     argmax_labels = torch.argmax(target[:, glimpse_idx, TRAIN_SHAPES], 1)
+            #     argmax_pred = torch.argmax(pred[:, TRAIN_SHAPES], 1)
+
             correct += (argmax_pred == argmax_labels).sum().item()
             n += target.size(0)
             mse_loss += mse.item()
@@ -271,7 +296,7 @@ def train_one_epoch_logpolar(train_loader, model, optimizer, which_loss, sort):
 
 
 @torch.no_grad()
-def test(loader, model, which_loss, sort, device):
+def test(loader, model, which_loss, config, device):
     model.eval()
     mse_loss = 0
     ce_loss = 0
@@ -283,14 +308,22 @@ def test(loader, model, which_loss, sort, device):
         input, target = input.to(device), target.to(device)
         batch_n += 1
         pred, _ = model(input)
-        if sort:
-            mse = criterion_mse(pred[:, :2], target[:, :2])
-            ce = criterion_ce(pred[:, :2], target[:, :2])
-            ce_noprob = criterion_ce(pred[:, :2], torch.argmax(target[:, :2], 1))
-        else:
-            mse = criterion_mse(pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES])
-            ce = criterion_ce(pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES])
-            ce_noprob = criterion_ce(pred[:, TRAIN_SHAPES], torch.argmax(target[:, TRAIN_SHAPES], 1))
+
+        pred, target = align_outputs_targets(pred, target, config)
+
+        mse = criterion_mse(pred, target)
+        ce = criterion_ce(pred, target)
+        ce_noprob = criterion_ce(pred, torch.argmax(target, 1))
+
+        # if sort:
+        #     mse = criterion_mse(pred[:, :2], target[:, :2])
+        #     ce = criterion_ce(pred[:, :2], target[:, :2])
+        #     ce_noprob = criterion_ce(pred[:, :2], torch.argmax(target[:, :2], 1))
+        # else:
+        #     mse = criterion_mse(pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES])
+        #     ce = criterion_ce(pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES])
+        #     ce_noprob = criterion_ce(pred[:, TRAIN_SHAPES], torch.argmax(target[:, TRAIN_SHAPES], 1))
+
         # mse = criterion_mse(pred[:, 1:3], target[:, :2])
         # mse = criterion_mse(pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES])
         # bce = criterion_bce(pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES])
@@ -302,12 +335,16 @@ def test(loader, model, which_loss, sort, device):
         # total = ce
         # if which_loss=='mse':
 
-        if sort:
-            argmax_labels = torch.argmax(target[:, :2], 1)
-            argmax_pred = torch.argmax(pred[:, :2], 1)
-        else:
-            argmax_labels = torch.argmax(target[:, TRAIN_SHAPES], 1)
-            argmax_pred = torch.argmax(pred[:, TRAIN_SHAPES], 1)
+        argmax_labels = torch.argmax(target, 1)
+        argmax_pred = torch.argmax(pred, 1)
+
+        # if sort:
+        #     argmax_labels = torch.argmax(target[:, :2], 1)
+        #     argmax_pred = torch.argmax(pred[:, :2], 1)
+        # else:
+        #     argmax_labels = torch.argmax(target[:, TRAIN_SHAPES], 1)
+        #     argmax_pred = torch.argmax(pred[:, TRAIN_SHAPES], 1)
+
         correct += (argmax_pred == argmax_labels).sum().item()
         # elif which_loss == 'bce':
         #     labels = torch.ceil(target[:, TRAIN_SHAPES])
@@ -333,7 +370,7 @@ def test(loader, model, which_loss, sort, device):
 
 
 @torch.no_grad()
-def test_logpolar(loader, model, which_loss, sort):
+def test_logpolar(loader, model, which_loss, config):
     model.eval()
     mse_loss = 0
     ce_loss = 0
@@ -347,14 +384,23 @@ def test_logpolar(loader, model, which_loss, sort):
         for glimpse_idx in range(n_glimpses):
             batch_n += 1
             pred, _ = model(input, xx[:, glimpse_idx], yy[:, glimpse_idx])
-            if sort:
-                mse = criterion_mse(pred[:, :2], target[:, glimpse_idx, :2])
-                ce = criterion_ce(pred[:, :2], target[:, glimpse_idx, :2])
-                ce_noprob = criterion_ce(pred[:, :2], torch.argmax(target[:, glimpse_idx, :2], 1))
-            else:
-                mse = criterion_mse(pred[:, TRAIN_SHAPES], target[:, glimpse_idx, TRAIN_SHAPES])
-                ce = criterion_ce(pred[:, TRAIN_SHAPES], target[:, glimpse_idx, TRAIN_SHAPES])
-                ce_noprob = criterion_ce(pred[:, TRAIN_SHAPES], torch.argmax(target[:, glimpse_idx, TRAIN_SHAPES], 1))
+
+            pred, target = align_outputs_targets(pred, target, config)
+
+            mse = criterion_mse(pred, target[:, glimpse_idx, :])
+            ce = criterion_ce(pred, target[:, glimpse_idx, :])
+            ce_noprob = criterion_ce(pred, torch.argmax(target[:, glimpse_idx, :], 1))
+
+
+            # if sort:
+            #     mse = criterion_mse(pred[:, :2], target[:, glimpse_idx, :2])
+            #     ce = criterion_ce(pred[:, :2], target[:, glimpse_idx, :2])
+            #     ce_noprob = criterion_ce(pred[:, :2], torch.argmax(target[:, glimpse_idx, :2], 1))
+            # else:
+            #     mse = criterion_mse(pred[:, TRAIN_SHAPES], target[:, glimpse_idx, TRAIN_SHAPES])
+            #     ce = criterion_ce(pred[:, TRAIN_SHAPES], target[:, glimpse_idx, TRAIN_SHAPES])
+            #     ce_noprob = criterion_ce(pred[:, TRAIN_SHAPES], torch.argmax(target[:, glimpse_idx, TRAIN_SHAPES], 1))
+
             # mse = criterion_mse(pred[:, 1:3], target[:, :2])
             # mse = criterion_mse(pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES])
             # bce = criterion_bce(pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES])
@@ -366,12 +412,15 @@ def test_logpolar(loader, model, which_loss, sort):
             # total = ce
             # if which_loss=='mse':
 
-            if sort:
-                argmax_labels = torch.argmax(target[:, glimpse_idx, :2], 1)
-                argmax_pred = torch.argmax(pred[:, :2], 1)
-            else:
-                argmax_labels = torch.argmax(target[:, glimpse_idx, TRAIN_SHAPES], 1)
-                argmax_pred = torch.argmax(pred[:, TRAIN_SHAPES], 1)
+            argmax_labels = torch.argmax(target[:, glimpse_idx, :], 1)
+            argmax_pred = torch.argmax(pred, 1)
+
+            # if sort:
+            #     argmax_labels = torch.argmax(target[:, glimpse_idx, :2], 1)
+            #     argmax_pred = torch.argmax(pred[:, :2], 1)
+            # else:
+            #     argmax_labels = torch.argmax(target[:, glimpse_idx, TRAIN_SHAPES], 1)
+            #     argmax_pred = torch.argmax(pred[:, TRAIN_SHAPES], 1)
             correct += (argmax_pred == argmax_labels).sum().item()
             # elif which_loss == 'bce':
             #     labels = torch.ceil(target[:, TRAIN_SHAPES])
@@ -397,7 +446,7 @@ def test_logpolar(loader, model, which_loss, sort):
 
 
 def plot_performance(tr_loss_mse, tr_acc, te_loss_mse, te_acc, base_name, ep):
-    fig_dir = 'figures_min/logpolar/ventral/'
+    fig_dir = 'figures_min_multiclass/logpolar/ventral/'
     fig, (ax1, ax2) = plt.subplots(1, 2)
     ax1.plot(tr_loss_mse[:ep], label='Train')
     ax1.plot(te_loss_mse[:ep], label='Test')
@@ -686,8 +735,15 @@ def get_model(config, device):
     #     output_size = 2  # target vs. distractor
     # elif config.challenge == 'minmax':
     #     output_size = len(config.train_shapes)  # multi-class: one per shape
-    # output_size = config.n_classes if config.sort else 25
-    output_size = 2 if config.sort else 25
+
+    if config.sort:
+        output_size = 2
+    elif config.multiclass:
+        output_size = len(config.train_shapes)  # adapt to the actual shapes used
+    else:
+        output_size = 25
+
+    #output_size = 2 if config.sort else 25
     drop = config.dropout
     penult_size = 10#8
     if config.model_type == 'mlp':
@@ -761,6 +817,8 @@ def get_config():
     # parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--logpolar', action='store_true', default=False)
     parser.add_argument('--sort', action='store_true', default=False)
+    parser.add_argument('--multiclass', action='store_true', default=False,
+    help='If set, ventral output size is restricted to the training shapes only')
     parser.add_argument('--policy', type=str, default='humanlike')
     
     config = parser.parse_args()
@@ -823,9 +881,9 @@ def main():
     # model_dir = 'models/toy/letters/ventral'
     # results_dir = 'results/toy/letters/ventral'
     # fig_dir = 'figures/toy/letters/ventral'
-    model_dir = 'models_min/logpolar/ventral'
-    results_dir = 'results_min/logpolar/ventral'
-    fig_dir = 'figures_min/logpolar/ventral'
+    model_dir = 'models_min_multiclass/logpolar/ventral'
+    results_dir = 'results_min_multiclass/logpolar/ventral'
+    fig_dir = 'figures_min_multiclass/logpolar/ventral'
     dir_list = [model_dir, results_dir, fig_dir]
     for directory in dir_list:
         if not os.path.exists(directory):
