@@ -40,14 +40,17 @@ def choose_model(config, model_dir):
                 'finetune': finetune, 'device':device, 'sort':config.sort,
                 'no_pretrain': config.no_pretrain, 'whole':whole_im,
                 'n_glimpses': config.n_glimpses, 'xy_sz':xy_sz, 'mult':config.mult, 
-                'pass_penult':config.pass_penult, 'sigmoid':sigmoid}
+                'pass_penult':config.pass_penult, 'sigmoid':sigmoid,
+                'task_type': getattr(config, 'task_type', 'count'),
+                'map_classes': getattr(config, 'map_shape_count', None)}
     if 'par' in model_type:# == 'rnn_classifier_par':
         # Model with two parallel streams at the level of the map. Only one
         # stream is optimized to match the map. The other of the same size
         # is free, only influenced by the num loss.
         mod_args['parallel'] = True
     hidden_size = mod_args['h_size']
-    output_size = mod_args['n_classes'] #+ 1
+    #output_size = mod_args['n_classes'] #+ 1
+    output_size = getattr(config, 'rel_output_size', max_num - config.min_num + 1)
     shape_format = mod_args['format']
     train_on = mod_args['train_on']
     grid = mod_args['grid']
@@ -164,6 +167,8 @@ class PretrainedVentral(nn.Module):
         no_pretrain = kwargs['no_pretrain']
         penult_size = 10#8
         self.xy_size = kwargs['xy_sz'] if 'xy_sz' in kwargs.keys() else 2
+        count_hidden_dim = kwargs['count_hidden_dim'] if 'count_hidden_dim' in kwargs.keys() else 128
+
         if self.train_on == 'xy':
             shape_rep_len = 0
         elif self.pass_penult:
@@ -191,14 +196,18 @@ class PretrainedVentral(nn.Module):
             self.ventral = vmod.ConvNet(self.width, self.height, penult_size, ventral_output_size, dropout=drop)
         if not no_pretrain:
             print('Loading saved ventral model parameters...')
+            map_location = torch.device('cpu')
             try:  # Try loading the whole model first, this is the way to go in case we make changes to the ventral model
-                self.ventral = torch.load(ventral_file)
+                self.ventral = torch.load(ventral_file, map_location=map_location)
                 if hasattr(self.ventral, 'penult_size'):
                     assert self.ventral.penult_size == penult_size
             except:  # Otherwise just load the state variables. Assumes the same architecture as initialized above.
-                self.ventral.load_state_dict(torch.load(ventral_file))
+                state_dict = torch.load(ventral_file, map_location=map_location)
+                self.ventral.load_state_dict(state_dict)
 
-        self.rnn = RNNClassifier2stream(shape_rep_len, hidden_size, map_size, output_size, **kwargs)
+        self.rnn = RNNClassifier2stream(shape_rep_len, hidden_size, map_size, output_size, count_hidden_dim, **kwargs)
+        self.n_classes = self.rnn.n_classes
+        self.map_classes = getattr(self.rnn, 'map_classes', None)
         self.initHidden = self.rnn.initHidden
         self.Softmax = nn.Softmax(dim=1)
 
@@ -249,11 +258,11 @@ class RNNClassifier2stream(nn.Module):
     
     Used for simple counting as is and as part of PretrainVentral for the
     distractor task."""
-    def __init__(self, pix_size, hidden_size, map_size, output_size, **kwargs):
+    def __init__(self, pix_size, hidden_size, map_size, output_size, count_hidden_dim=128, **kwargs):
         super().__init__()
         self.train_on = kwargs['train_on']
         self.output_size = output_size
-        n_shapes = kwargs['n_shapes'] if 'n_shapes' in kwargs.keys() else 20
+        self.n_shapes = kwargs['n_shapes'] if 'n_shapes' in kwargs.keys() else 20
         self.act = kwargs['act'] if 'act' in kwargs.keys() else None
         self.detach = kwargs['detach'] if 'detach' in kwargs.keys() else False
         drop = kwargs['dropout'] if 'dropout' in kwargs.keys() else 0
@@ -261,6 +270,12 @@ class RNNClassifier2stream(nn.Module):
         self.xy_size = kwargs['xy_sz'] if 'xy_sz' in kwargs.keys() else 2
         self.mult = kwargs['mult'] if 'mult' in kwargs.keys() else False
         self.sig = kwargs['sigmoid'] if 'sigmoid' in kwargs.keys() else False
+        self.grid = kwargs['grid'] if 'grid' in kwargs.keys() else 3
+        self.task_type = kwargs['task_type'] if 'task_type' in kwargs.keys() else 'count'
+        self.n_classes = kwargs['n_classes'] if 'n_classes' in kwargs.keys() else output_size
+        self.map_classes = kwargs['map_classes'] if 'map_classes' in kwargs.keys() else None
+        self.map_size = map_size
+
         if self.mult:
             embedding_size = 64
         else:
@@ -275,18 +290,51 @@ class RNNClassifier2stream(nn.Module):
         else:
             self.joint_embedding = nn.Linear(embedding_size//2, embedding_size)
 
+        print(f'RNNClassifier2stream: train_on {self.train_on}, mult {self.mult}, embedding_size {embedding_size}, pix_size {pix_size}, xy_size {self.xy_size}')
+
         self.rnn = RNN(embedding_size, hidden_size, hidden_size, self.act)
         self.drop_layer = nn.Dropout(p=drop)
-        self.map_readout = nn.Linear(hidden_size, map_size)
-        if self.par:
-            self.notmap = nn.Linear(hidden_size, map_size)
-            self.num_readout = nn.Linear(map_size * 2, output_size, bias=False)
-        else:
-            self.num_readout = nn.Linear(map_size, output_size, bias=False)
 
-        self.initHidden = self.rnn.initHidden
-        self.sigmoid = nn.Sigmoid()
-        self.LReLU = nn.LeakyReLU(0.1)
+        if self.task_type == 'min':
+
+            # map_classes = self.map_classes if self.map_classes is not None else self.n_shapes
+            # self.map_classes = map_classes
+            # self.map_readout = nn.Linear(hidden_size, self.map_size * (map_classes + 1))
+
+            # print(f'RNNClassifier2stream for min: map_classes {map_classes}, count_hidden_dim {count_hidden_dim}')
+            
+            # self.count_fc1 = nn.Linear(map_classes, count_hidden_dim)
+            # self.count_relu = nn.ReLU()
+            # self.count_fc2 = nn.Linear(count_hidden_dim, output_size)
+
+            # # self.num_readout = nn.Linear(1, output_size, bias=False)   ### NEW ### (min estimation output)
+
+            # self.initHidden = self.rnn.initHidden
+            # self.LReLU = nn.LeakyReLU(0.1)
+            self.map_readout = nn.Linear(hidden_size, map_size)
+            if self.par:
+                self.notmap = nn.Linear(hidden_size, map_size)
+                self.num_readout = nn.Linear(map_size * 2, output_size, bias=False)
+            else:
+                self.num_readout = nn.Linear(map_size, output_size, bias=False)
+
+            self.initHidden = self.rnn.initHidden
+            self.sigmoid = nn.Sigmoid()
+            self.LReLU = nn.LeakyReLU(0.1)
+
+        else:
+
+            self.map_readout = nn.Linear(hidden_size, map_size)
+            if self.par:
+                self.notmap = nn.Linear(hidden_size, map_size)
+                self.num_readout = nn.Linear(map_size * 2, output_size, bias=False)
+            else:
+                self.num_readout = nn.Linear(map_size, output_size, bias=False)
+
+            self.initHidden = self.rnn.initHidden
+            self.sigmoid = nn.Sigmoid()
+            self.LReLU = nn.LeakyReLU(0.1)
+
 
     def forward(self, x, hidden):
         if self.train_on == 'both':
@@ -313,28 +361,65 @@ class RNNClassifier2stream(nn.Module):
         x, hidden = self.rnn(x, hidden)
         x = self.drop_layer(x)
 
-        map_ = self.map_readout(x)
-        # If not including the map loss term in the optimized objective function, this sigmoid is unncessary and 
-        # contributes to vanishing gradients. Therefore, when use_loss == num, replace with LReLu.
-        if self.sig:
-            sig = self.sigmoid(map_)
-        else:
-            sig = self.LReLU(map_)
-        if self.detach:
-            map_to_pass_on = torch.round(sig.detach()).clone()
-        else:
-            map_to_pass_on = sig
+        if self.task_type == 'min':
+            # map_logits = self.map_readout(x)  # [batch, map_size * (map_classes+1)]
+            # map_logits = map_logits.view(-1, self.map_size, self.map_classes + 1)
+            # slot_probs = nn.functional.softmax(map_logits, dim=-1)  # per-slot class probs
 
-        # penult = self.LReLU(self.after_map(map_to_pass_on))
-        # function fom map to number should be linear so best to omit notlinearity, although because you allready applied sigmoid, lrelu wouldn't do anything anyway
-        # penult = self.after_map(map_to_pass_on) # this extra layer probably isn't helping with anything and just increases the number of params
-        if self.par:
-            # Two parallel layers, one to be a map, the other not
-            notmap = self.notmap(x)
-            penult = torch.cat((map_to_pass_on, notmap), dim=1)
+            # # Aggregate counts (ignore background=0)
+            # counts = slot_probs[:, :, 1:self.map_classes + 1].sum(dim=1)  # [batch, map_classes]
+
+            # # Learned mapping from counts → min prediction
+            # h = self.count_relu(self.count_fc1(counts))
+            # num = self.count_fc2(h)  # [batch, output_size]
+
+            # return num, pix, map_logits, hidden, x, counts
+
+            map_ = self.map_readout(x)
+
+            if self.sig:
+                sig = self.sigmoid(map_)
+            else:
+                sig = self.LReLU(map_)
+            if self.detach:
+                map_to_pass_on = torch.round(sig.detach()).clone()
+            else:
+                map_to_pass_on = sig
+
+            # penult = self.LReLU(self.after_map(map_to_pass_on))
+            # function fom map to number should be linear so best to omit notlinearity, although because you allready applied sigmoid, lrelu wouldn't do anything anyway
+            # penult = self.after_map(map_to_pass_on) # this extra layer probably isn't helping with anything and just increases the number of params
+            if self.par:
+                # Two parallel layers, one to be a map, the other not
+                notmap = self.notmap(x)
+                penult = torch.cat((map_to_pass_on, notmap), dim=1)
+            else:
+                penult = map_to_pass_on
+
+            num = self.num_readout(penult)
+            return num, pix, map_, hidden, x, penult
+
         else:
-            penult = map_to_pass_on
-        num = self.num_readout(penult)
-        return num, pix, map_, hidden, x, penult
+            map_ = self.map_readout(x)
+            # If not including the map loss term in the optimized objective function, this sigmoid is unncessary and 
+            # contributes to vanishing gradients. Therefore, when use_loss == num, replace with LReLu.
+            if self.sig:
+                sig = self.sigmoid(map_)
+            else:
+                sig = self.LReLU(map_)
+            if self.detach:
+                map_to_pass_on = torch.round(sig.detach()).clone()
+            else:
+                map_to_pass_on = sig
 
-
+            # penult = self.LReLU(self.after_map(map_to_pass_on))
+            # function fom map to number should be linear so best to omit notlinearity, although because you allready applied sigmoid, lrelu wouldn't do anything anyway
+            # penult = self.after_map(map_to_pass_on) # this extra layer probably isn't helping with anything and just increases the number of params
+            if self.par:
+                # Two parallel layers, one to be a map, the other not
+                notmap = self.notmap(x)
+                penult = torch.cat((map_to_pass_on, notmap), dim=1)
+            else:
+                penult = map_to_pass_on
+            num = self.num_readout(penult)
+            return num, pix, map_, hidden, x, penult

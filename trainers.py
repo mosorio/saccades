@@ -47,8 +47,7 @@ def choose_trainer(model, loaders, config):
         trainer = Trainer(model, loaders, config)
     return trainer
 
-def get_f1(map, locations):
-    """Calculate F1 Score"""
+def get_f1(map, locations, task_type='count'):
     map_pred = torch.round(torch.sigmoid(map))
     correct_map = map_pred.eq(locations)*1.0
     positive = map_pred.eq(1.)*1.0
@@ -65,6 +64,7 @@ class Trainer():
         self.train_loader, self.test_loaders = loaders
         self.config = config
         self.current_map_f1 = 0
+        self.task_type = 'min' if getattr(config, 'challenge', '') == 'min' else 'count'
         # Set up optimizer and scheduler
         if config.opt == 'SGD':
             start_lr = 0.01
@@ -118,6 +118,19 @@ class Trainer():
         self.criterion_bce_count = nn.BCEWithLogitsLoss(pos_weight=pos_weight_count)
         self.criterion_bce_full_noreduce = nn.BCEWithLogitsLoss(pos_weight=pos_weight_full, reduction='none')
         self.criterion_bce_count_noreduce = nn.BCEWithLogitsLoss(pos_weight=pos_weight_count, reduction='none')
+
+        # if self.task_type == 'min':
+        #     map_class_base = getattr(self.model, 'map_classes', None)
+        #     if map_class_base is None:
+        #         map_class_base = getattr(self.model, 'n_classes', self.nclasses)
+        #     map_class_count = map_class_base + 1  # include background class
+        #     class_weights = torch.ones(map_class_count, device=device)
+        #     num_weights = torch.ones(self.nclasses, device=device)
+        #     self.criterion_ce_map = nn.CrossEntropyLoss(weight=class_weights)
+        #     self.criterion_ce_map_noreduce = nn.CrossEntropyLoss(weight=class_weights, reduction='none')
+        #     self.criterion_ce_num = nn.CrossEntropyLoss(weight=num_weights)
+        #     self.criterion_ce_num_noreduce = nn.CrossEntropyLoss(weight=num_weights, reduction='none')
+
         n_epochs = config.n_epochs
 
         train_loss = np.zeros((n_epochs + 1,))
@@ -331,6 +344,15 @@ class Trainer():
             hidden = self.model.initHidden(input_dim)
             hidden = hidden.to(device)
 
+            # # Move labels and cast
+            # if self.task_type == 'min':
+            #     all_loc = all_loc.long().to(device)
+            #     target = target.long().to(device)
+            # else:
+            #     all_loc = all_loc.to(device)
+            #     target = target.to(device)
+
+
             for t in range(n_glimpses):
                 pred_num, pred_shape, map, hidden, _, _ = self.model(input[:, t, :], hidden)
                 shape_loss = 0
@@ -370,8 +392,21 @@ class Trainer():
             batch_results['epoch'] = ep
             test_results = pd.concat((test_results, batch_results))
 
+            # if self.task_type == 'min':
+            #     # ensure locations are integer indices
+            #     all_loc = all_loc.long()
+            #     # convert logits -> predicted indices if needed
+            #     if map.dim() == 3:
+            #         map_pred = map.argmax(dim=-1)  # [B, M]
+            #     else:
+            #         map_pred = map.long()
+            #     correct_slots = (map_pred == all_loc).float()   # [B, M]
+            #     map_slot_acc = correct_slots.mean().item()        # fraction of slots correct across batch
+            #     # per-image exact match: 1 if all slots correct
+            #     map_image_exact = (correct_slots.prod(dim=1) == 1.0).float().mean().item()
+            #     f1_sum += map_slot_acc
             n_correct += pred.eq(target.view_as(pred)).sum().item()
-            
+
             map_pred = torch.round(torch.sigmoid(map))
             correct_map = map_pred.eq(all_loc)*1.0
             positive = map_pred.eq(1.)*1.0
@@ -424,6 +459,7 @@ class Trainer():
         # map_epoch_loss = 0
         count_map_epoch_loss = 0
         shape_epoch_loss = 0
+        #task_type = getattr(self.config, 'task_type', 'count')
 
         for i, (_, input, target, num_dist, locations, shape_label, _) in enumerate(loader):
             # assert all(locations.sum(dim=1) == target)
@@ -443,6 +479,14 @@ class Trainer():
             self.model.zero_grad()
             hidden = self.model.initHidden(input_dim)
             hidden = hidden.to(config.device)
+
+            # # Move/cast labels to device and correct dtype for 'min' without disrupting old count task:
+            # if self.task_type == 'min':
+            #     # for min task we must pass integer class indices per slot and integer min-count targets
+            #     locations = locations.long().to(config.device)   # shape [B, map_size], dtype long
+            #     target = target.long().to(config.device)         # shape [B], dtype long (CE expects long)
+            # else:
+                # original behavior for binary/count task — keep types the same but move to device
 
             for t in range(n_glimpses):
                 pred_num, pred_shape, map, hidden, _, _ = self.model(input[:, t, :], hidden)
@@ -476,12 +520,15 @@ class Trainer():
             self.optimizer.step()
 
             correct += pred.eq(target.view_as(pred)).sum().item()
-            f1_sum += get_f1(map, locations)
+            f1_sum += get_f1(map, locations, self.task_type)
             epoch_loss += loss.item()
             num_epoch_loss += num_loss.item()
             # if not isinstance(map_loss_to_add, int):
                 # map_loss_to_add = map_loss_to_add.item()
+       
             count_map_epoch_loss += map_loss_to_add
+            #count_map_epoch_loss += (map_loss_to_add.item() if isinstance(map_loss_to_add, torch.Tensor) else map_loss_to_add)
+
             # count_map_epoch_loss += count_map_loss_to_add
             if self.config.save_batch_confusion:
                 conf_tr = self.calculate_confusion(target, pred)
@@ -884,6 +931,28 @@ class Trainer():
             savemat(savename + '.mat', to_save)
 
     def get_map_loss(self, map, locations, noreduce=False):
+
+        # print("Map logits shape:", map.shape)
+        # print("Map labels unique:", torch.unique(locations))
+        # print("Sample labels:", locations[0])
+        # print("Map logits sample:", map[0])
+        
+        # if self.task_type == 'min':
+        #     batch_size = locations.shape[0]
+        #     map_flat = map.view(-1, map.shape[-1])         # [batch*grid_size, n_classes]
+        #     locations_flat = locations.view(-1).long() 
+        #     # print('map_flat', map_flat.shape)    # [batch*grid_size]
+        #     # print('locations_flat', locations_flat[:30])
+        #     if noreduce:
+        #         map_loss = self.criterion_ce_map_noreduce(map_flat, locations_flat)
+        #         map_loss = map_loss.view(batch_size, -1).mean(dim=1)
+        #         map_loss_to_add = map_loss.sum().item()
+        #     else:
+        #         map_loss = self.criterion_ce_map(map_flat, locations_flat)
+        #         map_loss_to_add = map_loss.item()
+        #     return map_loss, map_loss_to_add
+        # else:
+
         if noreduce:
             all_map_loss = self.criterion_bce_full_noreduce(map, locations)
             map_loss = all_map_loss.mean(axis=1)
@@ -892,7 +961,7 @@ class Trainer():
             map_loss = self.criterion_bce_full(map, locations)
             map_loss_to_add = map_loss.item()
         return map_loss, map_loss_to_add
-    
+      
     def get_losses(self, pred_num, target, map, locations, ep, noreduce):
         # Calculate number classification loss
         if noreduce:
@@ -1022,7 +1091,7 @@ class FeedForwardTrainer(Trainer):
 
             n_correct += correct.sum().item()
             # correct_map += (torch.round(torch.sigmoid(map)).eq(all_loc)*1.0).mean().item()
-            correct_map += get_f1(map, all_loc)
+            correct_map += get_f1(map, all_loc, self.task_type)
             epoch_loss += loss.mean().item()
             num_epoch_loss += num_loss.mean().item()
             count_map_epoch_loss += map_loss_to_add
@@ -1072,7 +1141,7 @@ class FeedForwardTrainer(Trainer):
 
             correct += pred.eq(target.view_as(pred)).sum().item()
             # correct_map += (torch.round(torch.sigmoid(map)).eq(locations)*1.0).mean().item()
-            correct_map += get_f1(map, locations)
+            correct_map += get_f1(map, locations, self.task_type)
             epoch_loss += loss.item()
             num_epoch_loss += num_loss.item()
             # if not isinstance(map_loss_to_add, int):
@@ -1241,7 +1310,7 @@ class RecurrentTrainer(Trainer):
 
             n_correct += correct.sum().item()
             # correct_map += (torch.round(torch.sigmoid(map)).eq(all_loc)*1.0).mean().item()
-            correct_map += get_f1(map, all_loc)
+            correct_map += get_f1(map, all_loc, self.task_type)
             epoch_loss += loss.mean().item()
             num_epoch_loss += num_loss.mean().item()
             count_map_epoch_loss += map_loss_to_add
@@ -1305,7 +1374,7 @@ class RecurrentTrainer(Trainer):
 
             correct += pred.eq(target.view_as(pred)).sum().item()
             # correct_map += (torch.round(torch.sigmoid(map)).eq(locations)*1.0).mean().item()
-            correct_map += get_f1(map, locations)
+            correct_map += get_f1(map, locations, self.task_type)
             epoch_loss += loss.item()
             num_epoch_loss += num_loss.item()
             # if not isinstance(map_loss_to_add, int):
@@ -1473,7 +1542,7 @@ class TorchRNNTrainer(Trainer):
 
             correct += pred.eq(target.view_as(pred)).sum().item()
             # correct_map += (torch.round(torch.sigmoid(map)).eq(locations)*1.0).mean().item()
-            correct_map += get_f1(map, locations)
+            correct_map += get_f1(map, locations, self.task_type)
             
             epoch_loss += loss.item()
             num_epoch_loss += num_loss.item()

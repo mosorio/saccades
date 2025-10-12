@@ -61,8 +61,8 @@ def get_dataset(size, shapes_set, config, lums, solarize):
     # fname_gw = f'toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}{challenge}_grid{config.grid}_policy-{policy}_lum{lums}_gw6_{solar}{n_glimpses}{size}.pkl'
     # fname_gw = f'toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}{challenge}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}.pkl'
     # fname_gw = f'toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}{challenge}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}.nc'
-    datadir = 'datasets/image_sets'
-    fname_gw = f'{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}{challenge}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}'
+    datadir = 'datasets/image_sets_min_max_BinMaps'
+    fname_gw = f'{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}'
     
     if os.path.exists(fname_gw + '.nc'):
         print(f'Loading saved dataset {fname_gw}')
@@ -73,13 +73,13 @@ def get_dataset(size, shapes_set, config, lums, solarize):
     #     data = pd.read_pickle(fname)
     else:
         transform = 'logpolar_'
-        fname_gw = f'{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}{challenge}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}'
+        fname_gw = f'{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}'
         if os.path.exists(fname_gw + '.nc'):
             print(f'Loading saved dataset {fname_gw}')
             data = xr.open_dataset(fname_gw + '.nc')
         elif config.whole_image:
             transform = 'polar_'
-            fname_gw = f'{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}{challenge}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}'
+            fname_gw = f'{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}'
             if os.path.exists(fname_gw + '.nc'):
                 print(f'Loading saved dataset {fname_gw}')
                 data = xr.open_dataset(fname_gw + '.nc')
@@ -108,8 +108,9 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
     half_idx = list(range(nex))  # for mixed datasets with half free half fixed
     random.shuffle(half_idx)
     ### NUMBER LABEL ###
-    if target_type == 'min': # if only want to count the minimum numerosity
-        count_num = torch.tensor(dataset['numerosity_min'].values).long().to(config.device)
+    if config.challenge in ['min', 'max']:  # relational enumeration tasks
+        num_field = 'numerosity_min' if config.challenge == 'min' else 'numerosity_max'
+        count_num = torch.tensor(dataset[num_field].values).long().to(config.device)
         dist_num = torch.zeros_like(count_num).long().to(config.device)
     elif target_type == 'all':
         total_num = np.sum(dataset['locations'].values, axis=1)
@@ -130,7 +131,16 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
         else:
             count_num = torch.tensor(dataset['numerosity'].values).long().to(config.device)
             dist_num = torch.zeros_like(count_num).long().to(config.device)
-    count_num -= config.min_num
+    # Number labels should start at zero
+    if config.challenge in ['min', 'max']:
+        min_label = count_num.min()
+        count_num = count_num - min_label
+        print(f'Adjusted count_num labels to start at 0 by subtracting min label {min_label}. New range {count_num.min()}-{count_num.max()}')
+        rel_classes = int(count_num.max().item() + 1)
+        print(f'Number of relative classes: {rel_classes}')
+        config.rel_output_size = rel_classes    # stash for model construction
+    else:
+        count_num -= config.min_num
 
     ### INTEGRATION SCORE ###
     # pass_count = torch.tensor(dataset['pass_count'].values).float().to(config.device)
@@ -163,7 +173,13 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
 
     ### MAP LABEL ###
     # true_loc = torch.tensor(dataset['locations']).float().to(config.device)
-    if 'locations_count' in dataset:
+    if config.challenge in ['min', 'max']:
+        loc_field = 'locations_class_min' if config.challenge == 'min' else 'locations_class_max'
+        locations_class = dataset[loc_field].values.astype(np.float32)
+        count_loc = torch.tensor(locations_class).float().to(config.device)
+        all_loc = count_loc.clone()
+    elif 'locations_count' in dataset:
+        print('Using locations_count as count map target')
         count_loc = torch.tensor(dataset['locations_count'].values).float().to(config.device)
         dist_loc = torch.tensor(dataset['locations_distract'].values).float().to(config.device)
         all_loc = torch.tensor(dataset['locations'].values).float().to(config.device)

@@ -67,6 +67,7 @@ def get_config():
     parser.add_argument('--n_glimpses', type=int, default=None, help='How long is each glimpse sequence.')
     parser.add_argument('--policy', type=str, default='cheat+jitter', help='which saccadic policy to use. humanlike or cheat+jitter or cheat')
     parser.add_argument('--train_shapes', type=list, default=[0, 1, 2, 3, 5, 6, 7, 8], help='Can either be a string of numerals 0123 or letters ABCD.')
+    parser.add_argument('--map_shape_count', type=int, default=None, help='Override number of shape classes for map prediction head.')
     parser.add_argument('--test_shapes', nargs='*', type=list, default=[[0, 1, 2, 3, 5, 6, 7, 8], [4]]) 
     parser.add_argument('--min_num', type=int, default=1, help='minimum target numerosity')
     parser.add_argument('--max_num', type=int, default=5, help='maximum target numerosity')
@@ -93,7 +94,7 @@ def get_config():
     parser.add_argument('--pass_penult', action='store_true', default=False, help='whether to pass the penultimate layer of the ventral stream instead of the 2d prediction layer')
     parser.add_argument('--act', type=str, default=None, help='which activation function to use')
     parser.add_argument('--mult', action='store_true', default=False, help='Whether to train model with multiplicative interactions')
-
+    # parser.add_argument('--supervise_map', action='store_true', default=False, help='Whether to include a loss on the map prediction during training')
 
     # Training params
     parser.add_argument('--dropout', type=float, default=0.0)
@@ -123,7 +124,10 @@ def get_config():
 
 
     config = parser.parse_args()
+    # config.n_classes = len(config.train_shapes)
     config.solarize = False if config.no_solarize else True
+    config.task_type = 'min' if config.challenge == 'min' else 'count'
+    config.map_classes = None
     if config.model_type == 'rnn_regression':
         config.cross_entropy = False
     else:
@@ -144,6 +148,10 @@ def get_config():
         config.train_shapes = [letter_map[i] for i in config.train_shapes]
         for j, test_set in enumerate(config.test_shapes):
             config.test_shapes[j] = [letter_map[i] for i in test_set]
+    if config.map_shape_count is None:
+        config.map_shape_count = len(config.train_shapes)
+        print(f'Setting map shape count to number of training shapes: {config.map_shape_count}')
+
     if 'ventral' in config.model_type and config.no_pretrain:
         assert 'finetune' in config.model_type  # otherwise the params in the ventral module will never be trained!
     print(config)
