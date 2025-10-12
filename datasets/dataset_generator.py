@@ -456,6 +456,8 @@ class DatasetGenerator:
         shape_coords, shape_map, shape_hist = self.get_shape_coords(xy_coords, shapes_set, distinctiveness, to_count, distractors)
         # print(f'shape_coords:\n{shape_coords.shape}, shape_map: {shape_map}, shape_hist: {shape_hist}')
         min_count = np.min([c for c in shape_hist if c > 0]) if np.any(shape_hist) else 0 # minimum number of any shape in the image
+        max_count = np.max([c for c in shape_hist if c > 0]) if np.any(shape_hist) else 0
+        # print(f'min_count: {min_count}, max_count: {max_count}')
 
         # Initialize records
         # example = solver.GlimpsedImage(xy_coords, shape_coords, shape_map, shape_hist, objects, max_dist, num_range)
@@ -494,13 +496,39 @@ class DatasetGenerator:
         # unique_objects = set(example.objects)
         all_objects = to_count + distractors
         filled_locations = [1 if i in all_objects else 0 for i in range(self.grid_size)]
-        locations_class = np.zeros(self.grid_size, dtype=int)
-        for slot, class_idx in shape_map.items():
-            locations_class[slot] = class_idx
-            # {slot} class {class_idx}')
-        # print(locations_class)
+
+        # locations_class_index = np.zeros(self.grid_size, dtype=int)
+        # for slot, class_idx in shape_map.items():
+        #     locations_class_index[slot] = class_idx
+        # print("locations class index:", locations_class_index)
+
+        locations_class_min = np.zeros(self.grid_size, dtype=int)
+        locations_class_max = np.zeros(self.grid_size, dtype=int)
+
+        counts_per_shape = {}
+        for slot in to_count:
+            class_idx = shape_map[slot]
+            counts_per_shape[class_idx] = counts_per_shape.get(class_idx, 0) + 1
+
+        if counts_per_shape:
+            min_count = min(counts_per_shape.values())
+            max_count = max(counts_per_shape.values())
+            min_shapes = {cls for cls, cnt in counts_per_shape.items() if cnt == min_count}
+            max_shapes = {cls for cls, cnt in counts_per_shape.items() if cnt == max_count}
+
+            for slot in to_count:
+                class_idx = shape_map[slot]
+                if class_idx in min_shapes:
+                    locations_class_min[slot] = 1
+                if class_idx in max_shapes:
+                    locations_class_max[slot] = 1
+        # print("locations class min:", locations_class_min)
+        # print("locations class max:", locations_class_max)
+
         locations_2count = [1 if i in to_count else 0 for i in range(self.grid_size)]
+        # print("locations to count:", locations_2count)
         locations_dist = [1 if i in distractors else 0 for i in range(self.grid_size)]
+        # print("locations of distractors:", locations_dist)
         # these won't be exactly correct because of the small outerborder.
         target_coords_1x1 = [self.possible_centroids[target] for target in to_count]
         distract_coords_1x1 = [self.possible_centroids[distract] for distract in distractors]
@@ -508,11 +536,13 @@ class DatasetGenerator:
                         'numerosity_target': num,
                         'numerosity_dist': len(distractors),
                         'numerosity_min': min_count, # minimum number of any shape in the image
+                        'numerosity_max': max_count, # maximum number of any shape in the image
                         'num_unique': n_unique,
                         # 'num_min': example.min_num,
                         # 'predicted_num': example.pred_num, 'count': example.count,
                         'locations': filled_locations,
-                        'locations_class': locations_class,
+                        'locations_class_min': locations_class_min,
+                        'locations_class_max': locations_class_max,
                         'locations_count': locations_2count,
                         'locations_distract': locations_dist,
                         'object_coords': noiseless_coords,
@@ -589,11 +619,14 @@ class DatasetGenerator:
                 'numerosity_target': (["image"], np.stack(df['numerosity_target'].to_numpy())),
                 'numerosity_dist': (["image"], np.stack(df['numerosity_dist'].to_numpy())),
                 'numerosity_min': (["image"], np.stack(df['numerosity_min'].to_numpy())),
+                'numerosity_max': (["image"], np.stack(df['numerosity_max'].to_numpy())),
                 'num_unique': (["image"], np.stack(df['num_unique'].to_numpy())),
                 # 'num_min': (["image"], np.stack(df['num_min'].to_numpy())),
                 # 'predicted_num': (["image"], np.stack(df['predicted_num'].to_numpy())),
                 'locations': (["image", "slot"], np.stack(df['locations'].to_numpy())),
-                'locations_class': (["image", "slot"], np.stack(df['locations_class'].to_numpy())),
+                # 'locations_class': (["image", "slot"], np.stack(df['locations_class'].to_numpy())),
+                'locations_class_min': (["image", "slot"], np.stack(df['locations_class_min'].to_numpy())),
+                'locations_class_max': (["image", "slot"], np.stack(df['locations_class_max'].to_numpy())),
                 'locations_count': (["image", "slot"], np.stack(df['locations_count'].to_numpy())),
                 'locations_distract': (["image", "slot"], np.stack(df['locations_distract'].to_numpy())),
                 'object_coords': (["image", "glimpse", "coordinates"], np.stack(df['object_coords'].to_numpy())),
@@ -955,7 +988,7 @@ def main():
     data, data_pd = generator.add_logpolar_glimpses_xr(toydata, conf)
     
     # dirname = 'datasets/image_sets'
-    dirname = 'datasets/image_sets_min_max'
+    dirname = 'datasets/image_sets_min_max_BinMaps'
     fname_gw = f'{dirname}/num{conf.min_num}-{conf.max_num}_nl-{conf.noise_level}{trunc}{logscale}_{shapes}{distinctiveness}{challenge}_grid{conf.grid}_policy-{policy}_lum{conf.luminances}_{transform}{n_glimpses}{conf.size}'
     if not os.path.isdir(fname_gw):
             os.makedirs(fname_gw)
