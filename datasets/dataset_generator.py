@@ -173,7 +173,7 @@ class DatasetGenerator:
             # variance is squared standard deviation
 
             glimpse_coords = []
-            for x,y in coords_glimpsed_objects:
+            for x,y in coords_glimpsed_objects: # this is where jitter is added
                 noise_x, noise_y  = np.random.multivariate_normal([0,0], [[nl**2, 0],[0, nl**2]], 1)[0]
                 coordx = noise_x + x
                 coordy = noise_y + y

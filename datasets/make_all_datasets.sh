@@ -3,43 +3,48 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-N_G="${1:-19}"   # default 19, or pass first arg to override
+N_G="${1:-12}"   # default 12, or pass first arg to override
+min_num="${2:-1}"  # default 1, or pass second arg to override
+max_num="${3:-9}"  # default 9, or pass third arg to override
 
+echo "min_num=$min_num"
+echo "max_num=$max_num"
+echo "n_glimpses=$N_G"
 
 # FOR MODELING
 # Simple counting, no distractors
 # Test sets
-python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=0 --noise_level=0.74 --size=5000 --shapes BCDE --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6  --same --n_glimpses="$N_G"
-python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.3 0.6 0.9 --seed=1 --noise_level=0.74 --size=5000 --shapes BCDE --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6  --same --n_glimpses="$N_G"
-python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=2 --noise_level=0.74 --size=5000 --shapes FGHJ --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6  --same --n_glimpses="$N_G"
-python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.3 0.6 0.9 --seed=3 --noise_level=0.74 --size=5000 --shapes FGHJ --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6  --same --n_glimpses="$N_G"
+python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=0 --noise_level=0.74 --size=5000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6  --same --n_glimpses=$N_G
+python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.3 0.6 0.9 --seed=1 --noise_level=0.74 --size=5000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6  --same --n_glimpses=$N_G
+python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=2 --noise_level=0.74 --size=5000 --shapes FGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6  --same --n_glimpses=$N_G
+python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.3 0.6 0.9 --seed=3 --noise_level=0.74 --size=5000 --shapes FGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6  --same --n_glimpses=$N_G
 # Training set
-python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=4 --noise_level=0.74 --size=100000 --shapes BCDE --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6  --same --n_glimpses="$N_G"
+python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=4 --noise_level=0.74 --size=100000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6  --same --n_glimpses=$N_G
 
 
 # Ignore 0-2 distractors
-python3 datasets/dataset_generator.py --challenge=distract012 --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=0 --noise_level=0.74 --size=5000 --shapes BCDE --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6  --same --n_glimpses="$N_G"
-python3 datasets/dataset_generator.py --challenge=distract012 --polar --scaling=log --luminances 0.3 0.6 0.9 --seed=1 --noise_level=0.74 --size=5000 --shapes BCDE --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6  --same --n_glimpses="$N_G"
-python3 datasets/dataset_generator.py --challenge=distract012 --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=2 --noise_level=0.74 --size=5000 --shapes FGHJ --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6  --same --n_glimpses="$N_G"
-python3 datasets/dataset_generator.py --challenge=distract012 --polar --scaling=log --luminances 0.3 0.6 0.9 --seed=3 --noise_level=0.74 --size=5000 --shapes FGHJ --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6  --same --n_glimpses="$N_G"
+python3 datasets/dataset_generator.py --challenge=distract012 --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=0 --noise_level=0.74 --size=5000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6  --same --n_glimpses=$N_G
+python3 datasets/dataset_generator.py --challenge=distract012 --polar --scaling=log --luminances 0.3 0.6 0.9 --seed=1 --noise_level=0.74 --size=5000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6  --same --n_glimpses=$N_G
+python3 datasets/dataset_generator.py --challenge=distract012 --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=2 --noise_level=0.74 --size=5000 --shapes FGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6  --same --n_glimpses=$N_G
+python3 datasets/dataset_generator.py --challenge=distract012 --polar --scaling=log --luminances 0.3 0.6 0.9 --seed=3 --noise_level=0.74 --size=5000 --shapes FGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6  --same --n_glimpses=$N_G
 
-python3 datasets/dataset_generator.py --challenge=distract012 --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=4 --noise_level=0.74 --size=100000 --shapes BCDE --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6 --same --n_glimpses="$N_G"
+python3 datasets/dataset_generator.py --challenge=distract012 --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=4 --noise_level=0.74 --size=100000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --same --n_glimpses=$N_G
 
 # To pretrain the ventral stream
 # Train and test sets are sampled from same distribution (no OOD generalization) which span all of the test sets above
-python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.1 0.4 0.7 --seed=5 --noise_level=0.74 --size=1000 --shapes BCDE --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6 --same --n_glimpses="$N_G"
-python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.3 0.6 0.9 --seed=6 --noise_level=0.74 --size=1000 --shapes BCDE --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6 --same --n_glimpses="$N_G"
+python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.1 0.4 0.7 --seed=5 --noise_level=0.74 --size=1000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --same --n_glimpses=$N_G
+python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.3 0.6 0.9 --seed=6 --noise_level=0.74 --size=1000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --same --n_glimpses=$N_G
 
-python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.1 0.4 0.7 --seed=7 --noise_level=0.74 --size=1000 --shapes FGHJ --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6 --same --n_glimpses="$N_G"
-python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.3 0.6 0.9 --seed=8 --noise_level=0.74 --size=1000 --shapes FGHJ --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6 --same --n_glimpses="$N_G"
+python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.1 0.4 0.7 --seed=7 --noise_level=0.74 --size=1000 --shapes FGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --same --n_glimpses=$N_G
+python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.3 0.6 0.9 --seed=8 --noise_level=0.74 --size=1000 --shapes FGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --same --n_glimpses=$N_G
 
-python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.1 0.4 0.7 --seed=9 --noise_level=0.74 --size=10000 --shapes BCDE --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6 --same --n_glimpses="$N_G"
-python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.3 0.6 0.9 --seed=10 --noise_level=0.74 --size=10000 --shapes BCDE --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6 --same --n_glimpses="$N_G"
+python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.1 0.4 0.7 --seed=9 --noise_level=0.74 --size=10000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --same --n_glimpses=$N_G
+python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.3 0.6 0.9 --seed=10 --noise_level=0.74 --size=10000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --same --n_glimpses=$N_G
 
-python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.1 0.4 0.7 --seed=11 --noise_level=0.74 --size=10000 --shapes FGHJ --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6 --same --n_glimpses="$N_G"
-python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.3 0.6 0.9 --seed=12 --noise_level=0.74 --size=10000 --shapes FGHJ --min_num=1 --max_num=9 --solarize --n_shapes=25 --grid=6 --same --n_glimpses="$N_G"
+python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.1 0.4 0.7 --seed=11 --noise_level=0.74 --size=10000 --shapes FGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --same --n_glimpses=$N_G
+python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.3 0.6 0.9 --seed=12 --noise_level=0.74 --size=10000 --shapes FGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --same --n_glimpses=$N_G
 
-python3 datasets/merge_datasets.py --n_glimpses "$N_G" # merge subsets
+python3 datasets/merge_datasets.py --n_glimpses $N_G # merge subsets
 
 
 # # To test coherence illusion
