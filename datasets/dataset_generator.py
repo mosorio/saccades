@@ -285,7 +285,7 @@ class DatasetGenerator:
         return shape_coords
     
     def get_shape_coords(self, glimpse_coords, shapes_set, distinctiveness,
-                         objects2count, distractors, challange):
+                         objects2count, distractors, task_type):
         """Generate glimpse shape feature vectors.
 
         Each object is randomly assigned one shape. The shape feature
@@ -380,17 +380,17 @@ class DatasetGenerator:
                     b_count = int(np.sum(np.array(shape_assign) == background_shape))
                     s_count = int(np.sum(np.array(shape_assign) == special_shape))
 
-                    if challange == 'min' and b_count > s_count:
+                    if task_type == 'min' and b_count > s_count:
                         desired_ok = True
                         break
-                    if challange == 'max' and b_count < s_count:
+                    if task_type == 'max' and b_count < s_count:
                         desired_ok = True
                         break
                     # otherwise retry
 
                 if not desired_ok:
                     # fallback deterministic construction that respects the inequality:
-                    if challange == 'min':
+                    if task_type == 'min':
                         # background must be the max: give background > special
                         # pick special_count between 1 and num//2 (inclusive)
                         max_special = max(1, num // 2)
@@ -448,6 +448,7 @@ class DatasetGenerator:
             shapes_set = random.sample(config.shapes, n_unique)
         n_shapes = config.n_shapes
         challenge = config.challenge
+        task_type = config.task_type
         policy = config.policy
 
         # if config.distract:
@@ -494,7 +495,7 @@ class DatasetGenerator:
         # print(f'Generating example with num: {num}, n_distract: {n_disract}, n_unique: {n_unique}, shapes_set: {shapes_set}, distinctiveness: {distinctiveness}, challenge: {challenge}, policy: {policy}')
         xy_coords, objects, noiseless_coords, to_count, distractors = self.get_xy_coords(num, n_disract, noise_level, challenge, policy)
         # print(f'num: {num}, objects: {objects}, to_count: {to_count}, distractors: {distractors}')
-        shape_coords, shape_map, shape_hist = self.get_shape_coords(xy_coords, shapes_set, distinctiveness, to_count, distractors, challenge)
+        shape_coords, shape_map, shape_hist = self.get_shape_coords(xy_coords, shapes_set, distinctiveness, to_count, distractors, task_type)
         # print(f'shape_coords:\n{shape_coords.shape}, shape_map: {shape_map}, shape_hist: {shape_hist}')
         min_count = np.min([c for c in shape_hist if c > 0]) if np.any(shape_hist) else 0 # minimum number of any shape in the image
         max_count = np.max([c for c in shape_hist if c > 0]) if np.any(shape_hist) else 0
@@ -627,9 +628,9 @@ class DatasetGenerator:
             assert config.min_num >= max(n_unique_set)
             n_repeat_u = np.ceil(n_examples/len(n_unique_set)).astype(int)
             n_unique = np.repeat(n_unique_set, n_repeat_u)
-        # elif config.challenge != '':
-        #     print(f'Challenge {config.challenge} not implemented. Exiting.')
-        #     exit()
+        elif config.challenge != '':
+            print(f'Challenge {config.challenge} not implemented. Exiting.')
+            exit()
         else:
             n_distract = np.zeros_like(nums)
             n_unique = np.empty_like(nums) * np.nan
@@ -972,6 +973,7 @@ def main():
     # parser.add_argument('--distract', action='store_true', default=False)
     # parser.add_argument('--distract_corner', action='store_true', default=False)
     # parser.add_argument('--random', action='store_true', default=False)
+    parser.add_argument('--task_type', type=str, default='min')
     parser.add_argument('--challenge', type=str, default='')
     parser.add_argument('--policy', type=str, default='cheat+jitter')
     parser.add_argument('--luminances', nargs='*', type=float, default=[0, 0.5, 1], help='at least two values between 0 and 1')
@@ -1032,7 +1034,7 @@ def main():
     data, data_pd = generator.add_logpolar_glimpses_xr(toydata, conf)
     
     # dirname = 'datasets/image_sets'
-    dirname = 'datasets/image_sets_min_max_debug'
+    dirname = 'datasets/image_sets_min_max'
     fname_gw = f'{dirname}/num{conf.min_num}-{conf.max_num}_nl-{conf.noise_level}{trunc}{logscale}_{shapes}{distinctiveness}{challenge}_grid{conf.grid}_policy-{policy}_lum{conf.luminances}_{transform}{n_glimpses}{conf.size}'
     if not os.path.isdir(fname_gw):
             os.makedirs(fname_gw)
