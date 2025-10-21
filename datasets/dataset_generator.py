@@ -285,7 +285,7 @@ class DatasetGenerator:
         return shape_coords
     
     def get_shape_coords(self, glimpse_coords, shapes_set, distinctiveness,
-                         objects2count, distractors):
+                         objects2count, distractors, challange):
         """Generate glimpse shape feature vectors.
 
         Each object is randomly assigned one shape. The shape feature
@@ -353,24 +353,65 @@ class DatasetGenerator:
                 elif distinctiveness == 0.3:
                     shape_subset = shapes_copy[:2] # 2/4 shapes
                     shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
-        
-        # # Assign a random shape to each object
-        # if distinctiveness == 0:  # All shapes in the image will be the same
-        #     shape = np.random.choice(shapes_set)
-        #     shape_assign = np.repeat(shape, num)
-        # else:
-        #     shapes_copy = shapes_set.copy()
-        #     random.shuffle(shapes_copy)
-        #     if distinctiveness == 1: # As distinctive as possible
-        #         shape_assign = np.tile(shapes_copy, int(np.ceil(num/len(shapes_set))))[:num]
-        #     elif distinctiveness == 0.6:
-        #         shape_subset = shapes_copy[:3] # 3 out of 4 shapes (assuming 4 total shapes)
-        #         shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
-        #     elif distinctiveness == 0.3:
-        #         shape_subset = shapes_copy[:2] # 2/4 shapes
-        #         shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
 
-            # shape_assign = np.random.choice(shapes_set, size=num, replace=True)
+            # --- inside get_shape_coords, where you currently handle not_all_equal_class_counts ---
+            if getattr(self.conf, 'fixed_background', False):
+                # choose background (filler) as before
+                if hasattr(self.conf, 'fixed_background_shape') and self.conf.fixed_background_shape in shapes_set:
+                    background_shape = self.conf.fixed_background_shape
+                else:
+                    background_shape = next((s for s in shapes_set if s != distractor_shape), shapes_set[0])
+
+                candidate_shapes = [s for s in shapes_set if s != background_shape]
+                if not candidate_shapes:
+                    candidate_shapes = [s for s in range(self.n_shapes) if s not in (background_shape, distractor_shape)]
+                if not candidate_shapes:
+                    candidate_shapes = [background_shape]
+
+                # pick one special shape
+                special_shape = np.random.choice(candidate_shapes)
+
+                # Try a few times using your helper, but enforce the inequality depending on challenge:
+                desired_ok = False
+                max_tries = 10
+                for _try in range(max_tries):
+                    shape_assign = assign_minmax_class_counts([background_shape, special_shape], num)
+                    # count occurrences
+                    b_count = int(np.sum(np.array(shape_assign) == background_shape))
+                    s_count = int(np.sum(np.array(shape_assign) == special_shape))
+
+                    if challange == 'min' and b_count > s_count:
+                        desired_ok = True
+                        break
+                    if challange == 'max' and b_count < s_count:
+                        desired_ok = True
+                        break
+                    # otherwise retry
+
+                if not desired_ok:
+                    # fallback deterministic construction that respects the inequality:
+                    if challange == 'min':
+                        # background must be the max: give background > special
+                        # pick special_count between 1 and num//2 (inclusive)
+                        max_special = max(1, num // 2)
+                        special_count = np.random.randint(1, max_special + 1)
+                        background_count = num - special_count
+                    else:  # 'max'
+                        # background must be the min: give background < special
+                        min_special = max(1, (num // 2) + 1)
+                        special_count = np.random.randint(min_special, num + 1)
+                        if special_count >= num:
+                            special_count = num - 1
+                        background_count = num - special_count
+
+                    shape_assign = [special_shape] * special_count + [background_shape] * background_count
+                    np.random.shuffle(shape_assign)
+
+                # make sure it's a numpy array of ints for downstream code
+                shape_assign = np.array(shape_assign, dtype=int)
+
+
+
         dist_map = {dist_loc: distractor_shape for dist_loc in distractors}
         shape_map = {object: shape for (object, shape) in zip(objects2count, shape_assign)}
         shape_map.update(dist_map)
@@ -453,7 +494,7 @@ class DatasetGenerator:
         # print(f'Generating example with num: {num}, n_distract: {n_disract}, n_unique: {n_unique}, shapes_set: {shapes_set}, distinctiveness: {distinctiveness}, challenge: {challenge}, policy: {policy}')
         xy_coords, objects, noiseless_coords, to_count, distractors = self.get_xy_coords(num, n_disract, noise_level, challenge, policy)
         # print(f'num: {num}, objects: {objects}, to_count: {to_count}, distractors: {distractors}')
-        shape_coords, shape_map, shape_hist = self.get_shape_coords(xy_coords, shapes_set, distinctiveness, to_count, distractors)
+        shape_coords, shape_map, shape_hist = self.get_shape_coords(xy_coords, shapes_set, distinctiveness, to_count, distractors, challenge)
         # print(f'shape_coords:\n{shape_coords.shape}, shape_map: {shape_map}, shape_hist: {shape_hist}')
         min_count = np.min([c for c in shape_hist if c > 0]) if np.any(shape_hist) else 0 # minimum number of any shape in the image
         max_count = np.max([c for c in shape_hist if c > 0]) if np.any(shape_hist) else 0
@@ -497,9 +538,9 @@ class DatasetGenerator:
         all_objects = to_count + distractors
         filled_locations = [1 if i in all_objects else 0 for i in range(self.grid_size)]
 
-        # locations_class_index = np.zeros(self.grid_size, dtype=int)
-        # for slot, class_idx in shape_map.items():
-        #     locations_class_index[slot] = class_idx
+        locations_class_index = np.zeros(self.grid_size, dtype=int)
+        for slot, class_idx in shape_map.items():
+            locations_class_index[slot] = class_idx
         # print("locations class index:", locations_class_index)
 
         locations_class_min = np.zeros(self.grid_size, dtype=int)
@@ -543,6 +584,7 @@ class DatasetGenerator:
                         'locations': filled_locations,
                         'locations_class_min': locations_class_min,
                         'locations_class_max': locations_class_max,
+                        'locations_class_index': locations_class_index,
                         'locations_count': locations_2count,
                         'locations_distract': locations_dist,
                         'object_coords': noiseless_coords,
@@ -585,9 +627,9 @@ class DatasetGenerator:
             assert config.min_num >= max(n_unique_set)
             n_repeat_u = np.ceil(n_examples/len(n_unique_set)).astype(int)
             n_unique = np.repeat(n_unique_set, n_repeat_u)
-        elif config.challenge != '':
-            print(f'Challenge {config.challenge} not implemented. Exiting.')
-            exit()
+        # elif config.challenge != '':
+        #     print(f'Challenge {config.challenge} not implemented. Exiting.')
+        #     exit()
         else:
             n_distract = np.zeros_like(nums)
             n_unique = np.empty_like(nums) * np.nan
@@ -624,7 +666,7 @@ class DatasetGenerator:
                 # 'num_min': (["image"], np.stack(df['num_min'].to_numpy())),
                 # 'predicted_num': (["image"], np.stack(df['predicted_num'].to_numpy())),
                 'locations': (["image", "slot"], np.stack(df['locations'].to_numpy())),
-                # 'locations_class': (["image", "slot"], np.stack(df['locations_class'].to_numpy())),
+                'locations_class_index': (["image", "slot"], np.stack(df['locations_class_index'].to_numpy())),
                 'locations_class_min': (["image", "slot"], np.stack(df['locations_class_min'].to_numpy())),
                 'locations_class_max': (["image", "slot"], np.stack(df['locations_class_max'].to_numpy())),
                 'locations_count': (["image", "slot"], np.stack(df['locations_count'].to_numpy())),
@@ -923,6 +965,8 @@ def main():
     # help='If set, ensures only the max class count is unique in each image')
     parser.add_argument('--not_all_equal_class_counts', action='store_true', default=False,
     help='If set, forbids all classes from having the same count in each image')
+    parser.add_argument('--fixed_background_shape', type=int, default=2)
+    parser.add_argument('--fixed_background', action='store_true', default=False)
     # --distinctive would replace --same
     parser.add_argument('--grid', type=int, default=6)
     # parser.add_argument('--distract', action='store_true', default=False)
@@ -988,7 +1032,7 @@ def main():
     data, data_pd = generator.add_logpolar_glimpses_xr(toydata, conf)
     
     # dirname = 'datasets/image_sets'
-    dirname = 'datasets/image_sets_min_max_BinMaps'
+    dirname = 'datasets/image_sets_min_max_debug'
     fname_gw = f'{dirname}/num{conf.min_num}-{conf.max_num}_nl-{conf.noise_level}{trunc}{logscale}_{shapes}{distinctiveness}{challenge}_grid{conf.grid}_policy-{policy}_lum{conf.luminances}_{transform}{n_glimpses}{conf.size}'
     if not os.path.isdir(fname_gw):
             os.makedirs(fname_gw)
