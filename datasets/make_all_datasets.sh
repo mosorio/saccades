@@ -44,7 +44,7 @@ python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=lo
 python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.1 0.4 0.7 --seed=11 --noise_level=0.74 --size=10000 --shapes FGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --same --n_glimpses=$N_G
 python3 datasets/dataset_generator.py --policy=cheat+jitter --polar --scaling=log --challenge=distract012 --luminances 0.3 0.6 0.9 --seed=12 --noise_level=0.74 --size=10000 --shapes FGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --same --n_glimpses=$N_G
 
-python3 datasets/merge_datasets.py --n_glimpses $N_G # merge subsets
+python3 datasets/merge_datasets.py --n_glimpses $N_G --min_num $min_num --max_num $max_num# merge subsets
 
 
 # # To test coherence illusion
