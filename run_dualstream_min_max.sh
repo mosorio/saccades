@@ -34,9 +34,9 @@ python3 main.py \
   --model_type=pretrained_ventral-cnn-mse --sort --pass_penult --train_on=both \
   --use_loss=num --opt=Adam --wd=0.00001 --distinctive=0.3 --challenge=min \
   --shape_input=logpolar --min_num="$min_num" --max_num="$max_num" \
-  --n_glimpses="$n_glimpses" --h_size=1024 --train_shapes=BCDE --test_shapes "BCDE CFGHJ" \
+  --n_glimpses="$n_glimpses" --h_size=1024 --train_shapes=BCDE --test_shapes BCDE CFGHJ \
   --noise_level=0.74 --train_size=100000 --test_size=5000 --n_epochs=300 \
-  --act=lrelu --dropout=0.5 --rep=0 --grid=6 --map_shape_count=8 \
+  --act=lrelu --dropout=0.5 --rep=0 --grid=6 --map_shape_count=8 --save_act \
   --ventral="ventral_cnn-lrelu_hsize-25_logpolar_num${min_num}-${max_num}_nl-0.74_diff-0-6_grid6_policy-cheat+jitter_lum-[0.1, 0.4, 0.7, 0.3, 0.6, 0.9]_trainshapes-BCDEFGHJsame_distract012_logpolar_40000_loss-mse_opt-Adam_drop0.4_sort_200eps_rep0_ep-200.pt" \
    | tee "${logfile_main}"
 
