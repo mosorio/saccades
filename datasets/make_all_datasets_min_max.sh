@@ -10,19 +10,21 @@ set -euo pipefail
 N_G="${1:-12}"   # default 12, or pass first arg to override
 min_num="${2:-3}"  # default 3, or pass second arg to override
 max_num="${3:-7}"  # default 7, or pass third arg to override
+task="${4:-min}" # default min, or pass fourth arg to override
 
 echo "min_num=$min_num"
 echo "max_num=$max_num"
 echo "n_glimpses=$N_G"
+echo "task=$task"
 
 
-python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=0 --noise_level=0.74 --size=5000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --n_glimpses=$N_G --distinctive=0.3 --not_all_equal_class_counts --fixed_background_shape=2 --task_type=min --fixed_background
-python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.3 0.6 0.9 --seed=1 --noise_level=0.74 --size=5000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --n_glimpses=$N_G --distinctive=0.3 --not_all_equal_class_counts --fixed_background_shape=2 --task_type=min --fixed_background
-python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=2 --noise_level=0.74 --size=5000 --shapes CFGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --n_glimpses=$N_G --distinctive=0.3 --not_all_equal_class_counts --fixed_background_shape=2 --task_type=min --fixed_background
-python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.3 0.6 0.9 --seed=3 --noise_level=0.74 --size=5000 --shapes CFGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --n_glimpses=$N_G --distinctive=0.3 --not_all_equal_class_counts --fixed_background_shape=2 --task_type=min --fixed_background
+python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=0 --noise_level=0.74 --size=5000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --n_glimpses=$N_G --distinctive=0.3 --not_all_equal_class_counts --fixed_background_shape=2 --task_type=$task --fixed_background
+python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.3 0.6 0.9 --seed=1 --noise_level=0.74 --size=5000 --shapes BCDE --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --n_glimpses=$N_G --distinctive=0.3 --not_all_equal_class_counts --fixed_background_shape=2 --task_type=$task --fixed_background
+python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=2 --noise_level=0.74 --size=5000 --shapes CFGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --n_glimpses=$N_G --distinctive=0.3 --not_all_equal_class_counts --fixed_background_shape=2 --task_type=$task --fixed_background
+python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.3 0.6 0.9 --seed=3 --noise_level=0.74 --size=5000 --shapes CFGHJ --min_num=$min_num --max_num=$max_num --solarize --n_shapes=25 --grid=6 --n_glimpses=$N_G --distinctive=0.3 --not_all_equal_class_counts --fixed_background_shape=2 --task_type=$task --fixed_background
 
 # Training set
-python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=4 --noise_level=0.74 --size=100000 --shapes BCDE --min_num=$min_num --max_num=$max_num  --solarize --n_shapes=25 --grid=6 --n_glimpses=$N_G --distinctive=0.3 --not_all_equal_class_counts --fixed_background_shape=2 --task_type=min --fixed_background
+python3 datasets/dataset_generator.py --polar --scaling=log --luminances 0.1 0.4 0.7 --seed=4 --noise_level=0.74 --size=100000 --shapes BCDE --min_num=$min_num --max_num=$max_num  --solarize --n_shapes=25 --grid=6 --n_glimpses=$N_G --distinctive=0.3 --not_all_equal_class_counts --fixed_background_shape=2 --task_type=$task --fixed_background
 
 
 # To pretrain the ventral stream
