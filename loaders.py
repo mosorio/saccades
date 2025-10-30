@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader
 
 
-def get_dataset(size, shapes_set, config, lums, solarize):
+def get_dataset(size, shapes_set, config, lums, solarize, pair_group):
     """If specified dataset already exists, load it.
     """
     noise_level = config.noise_level
@@ -61,8 +61,11 @@ def get_dataset(size, shapes_set, config, lums, solarize):
     # fname_gw = f'toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}{challenge}_grid{config.grid}_policy-{policy}_lum{lums}_gw6_{solar}{n_glimpses}{size}.pkl'
     # fname_gw = f'toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}{challenge}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}.pkl'
     # fname_gw = f'toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}{challenge}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}.nc'
-    datadir = 'datasets/image_sets_min_max_BinMaps'
-    fname_gw = f'{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}'
+    datadir = 'datasets/image_sets_min_max'
+    base = f"{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}"
+    if pair_group is not None:
+        base += f"_pair-{pair_group}"
+    fname_gw = f"{base}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}"
     
     if os.path.exists(fname_gw + '.nc'):
         print(f'Loading saved dataset {fname_gw}')
@@ -73,13 +76,15 @@ def get_dataset(size, shapes_set, config, lums, solarize):
     #     data = pd.read_pickle(fname)
     else:
         transform = 'logpolar_'
-        fname_gw = f'{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}'
+        fname_gw = f"{base}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}"
+        #fname_gw = f'{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}_pair-{pair_group}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}'
         if os.path.exists(fname_gw + '.nc'):
             print(f'Loading saved dataset {fname_gw}')
             data = xr.open_dataset(fname_gw + '.nc')
         elif config.whole_image:
             transform = 'polar_'
-            fname_gw = f'{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}'
+            fname_gw = f"{base}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}"
+            #fname_gw = f'{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}_pair-{pair_group}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}'
             if os.path.exists(fname_gw + '.nc'):
                 print(f'Loading saved dataset {fname_gw}')
                 data = xr.open_dataset(fname_gw + '.nc')
@@ -175,6 +180,7 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
     # true_loc = torch.tensor(dataset['locations']).float().to(config.device)
     if config.challenge in ['min', 'max']:
         loc_field = 'locations_class_min' if config.challenge == 'min' else 'locations_class_max'
+        # loc_field = 'locations_class_index'  # using index map instead of one hot class map
         locations_class = dataset[loc_field].values.astype(np.float32)
         count_loc = torch.tensor(locations_class).float().to(config.device)
         all_loc = count_loc.clone()
@@ -220,6 +226,9 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
                     # remove distractor shape
                     shape_array[:, :, 0] = 0
                 shape_input = torch.tensor(shape_array).float()#.to(config.device)
+            elif shape_format == 'onehot':
+                onehot_array = dataset['glimpse_shape_onehot'].values   # [N, T, num_shapes]
+                shape_input = torch.tensor(onehot_array).float().to(config.device)
             elif 'logpolar' in shape_format:
                 if 'centre' in shape_format or 'center' in shape_format or gaze=='fixed':
                     logpolar_centre = dataset['centre_fixation'].values
@@ -718,13 +727,13 @@ def choose_loader(config):
         ood_lums = lums2
         
         # Get xarrays
-        trainset = get_dataset(train_size, config.shapestr, config, train_lums, solarize=config.solarize)
+        trainset = get_dataset(train_size, config.shapestr, config, train_lums, solarize=config.solarize, pair_group='train')
         # testsets = [get_dataset(test_size, test_shapes, config, lums, solarize=config.solarize) for test_shapes, lums in product(config.testshapestr, config.lum_sets)]
-        validation_set = get_dataset(test_size, config.shapestr, config, val_lums, solarize=config.solarize)
+        validation_set = get_dataset(test_size, config.shapestr, config, val_lums, solarize=config.solarize, pair_group='train')
         
-        OODshape_set = get_dataset(test_size, config.testshapestr[-1], config, val_lums, solarize=config.solarize)
-        OODlum_set = get_dataset(test_size, config.shapestr, config, ood_lums, solarize=config.solarize)
-        OODboth_set = get_dataset(test_size, config.testshapestr[-1], config, ood_lums, solarize=config.solarize)
+        OODshape_set = get_dataset(test_size, config.testshapestr[-1], config, val_lums, solarize=config.solarize, pair_group='test')
+        OODlum_set = get_dataset(test_size, config.shapestr, config, ood_lums, solarize=config.solarize, pair_group='train')
+        OODboth_set = get_dataset(test_size, config.testshapestr[-1], config, ood_lums, solarize=config.solarize, pair_group='test')
         
         # test_xarray = {'validation': validation_set, 'OODshape': OODshape_set, 'OODlum':OODlum_set, "OODboth":OODboth_set}
 

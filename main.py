@@ -18,6 +18,8 @@ from trainers import choose_trainer
 from loaders import choose_loader
 from models import choose_model
 from utils import Timer
+import json
+from pathlib import Path
 
 def set_device(config):
     """Specify the compute resource (CUDA or CPU) to train model with"""
@@ -140,5 +142,14 @@ if __name__ == '__main__':
 
     """
     config = get_config()
+
+    # config_dir = Path("/Users/mosorio/Documents/ChrisWork/saccades/datasets/config_dir")
+    config_dir = Path("/mnt/quick/maria/saccades/datasets/config_dir")
+    config_dir.mkdir(parents=True, exist_ok=True) 
+    
+    config_path = config_dir / "config.json"
+    with open(config_path, "w") as f:
+        json.dump(vars(config), f, indent=2, sort_keys=True)
+
     config.device = set_device(config)
     main(config)

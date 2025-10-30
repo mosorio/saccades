@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -118,18 +119,6 @@ class Trainer():
         self.criterion_bce_count = nn.BCEWithLogitsLoss(pos_weight=pos_weight_count)
         self.criterion_bce_full_noreduce = nn.BCEWithLogitsLoss(pos_weight=pos_weight_full, reduction='none')
         self.criterion_bce_count_noreduce = nn.BCEWithLogitsLoss(pos_weight=pos_weight_count, reduction='none')
-
-        # if self.task_type == 'min':
-        #     map_class_base = getattr(self.model, 'map_classes', None)
-        #     if map_class_base is None:
-        #         map_class_base = getattr(self.model, 'n_classes', self.nclasses)
-        #     map_class_count = map_class_base + 1  # include background class
-        #     class_weights = torch.ones(map_class_count, device=device)
-        #     num_weights = torch.ones(self.nclasses, device=device)
-        #     self.criterion_ce_map = nn.CrossEntropyLoss(weight=class_weights)
-        #     self.criterion_ce_map_noreduce = nn.CrossEntropyLoss(weight=class_weights, reduction='none')
-        #     self.criterion_ce_num = nn.CrossEntropyLoss(weight=num_weights)
-        #     self.criterion_ce_num_noreduce = nn.CrossEntropyLoss(weight=num_weights, reduction='none')
 
         n_epochs = config.n_epochs
 
@@ -344,15 +333,6 @@ class Trainer():
             hidden = self.model.initHidden(input_dim)
             hidden = hidden.to(device)
 
-            # # Move labels and cast
-            # if self.task_type == 'min':
-            #     all_loc = all_loc.long().to(device)
-            #     target = target.long().to(device)
-            # else:
-            #     all_loc = all_loc.to(device)
-            #     target = target.to(device)
-
-
             for t in range(n_glimpses):
                 pred_num, pred_shape, map, hidden, _, _ = self.model(input[:, t, :], hidden)
                 shape_loss = 0
@@ -392,21 +372,6 @@ class Trainer():
             batch_results['epoch'] = ep
             test_results = pd.concat((test_results, batch_results))
 
-            # if self.task_type == 'min':
-            #     # ensure locations are integer indices
-            #     all_loc = all_loc.long()
-            #     # convert logits -> predicted indices if needed
-            #     if map.dim() == 3:
-            #         map_pred = map.argmax(dim=-1)  # [B, M]
-            #     else:
-            #         map_pred = map.long()
-            #     correct_slots = (map_pred == all_loc).float()   # [B, M]
-            #     map_slot_acc = correct_slots.mean().item()        # fraction of slots correct across batch
-            #     # per-image exact match: 1 if all slots correct
-            #     map_image_exact = (correct_slots.prod(dim=1) == 1.0).float().mean().item()
-            #     f1_sum += map_slot_acc
-            n_correct += pred.eq(target.view_as(pred)).sum().item()
-
             map_pred = torch.round(torch.sigmoid(map))
             correct_map = map_pred.eq(all_loc)*1.0
             positive = map_pred.eq(1.)*1.0
@@ -416,7 +381,9 @@ class Trainer():
             recall = true_positive.sum(dim=0)/true
             f1 = 2*((precision * recall)/(precision + recall)) 
             f1_sum += f1.nanmean().item()
-            
+
+            n_correct += pred.eq(target.view_as(pred)).sum().item()
+
             epoch_loss += loss.mean().item()
             num_epoch_loss += num_loss.mean().item()
             # if not isinstance(map_loss_to_add, int):
@@ -479,14 +446,6 @@ class Trainer():
             self.model.zero_grad()
             hidden = self.model.initHidden(input_dim)
             hidden = hidden.to(config.device)
-
-            # # Move/cast labels to device and correct dtype for 'min' without disrupting old count task:
-            # if self.task_type == 'min':
-            #     # for min task we must pass integer class indices per slot and integer min-count targets
-            #     locations = locations.long().to(config.device)   # shape [B, map_size], dtype long
-            #     target = target.long().to(config.device)         # shape [B], dtype long (CE expects long)
-            # else:
-                # original behavior for binary/count task — keep types the same but move to device
 
             for t in range(n_glimpses):
                 pred_num, pred_shape, map, hidden, _, _ = self.model(input[:, t, :], hidden)
@@ -902,6 +861,7 @@ class Trainer():
             target_locations = np.array([np.array([]) if tl is None else tl for tl in image_data.target_coords_scaled[index].values], dtype=object)
             distractor_locations = np.array([np.array([]) if dl is None else dl for dl in image_data.distract_coords_scaled[index].values], dtype=object)
             # Save to file
+            os.makedirs("activations", exist_ok=True)
             savename = f'activations/{basename}_test-{test_names[ts]}'
 
             # Put into pandas dataframe
@@ -937,21 +897,6 @@ class Trainer():
         # print("Sample labels:", locations[0])
         # print("Map logits sample:", map[0])
         
-        # if self.task_type == 'min':
-        #     batch_size = locations.shape[0]
-        #     map_flat = map.view(-1, map.shape[-1])         # [batch*grid_size, n_classes]
-        #     locations_flat = locations.view(-1).long() 
-        #     # print('map_flat', map_flat.shape)    # [batch*grid_size]
-        #     # print('locations_flat', locations_flat[:30])
-        #     if noreduce:
-        #         map_loss = self.criterion_ce_map_noreduce(map_flat, locations_flat)
-        #         map_loss = map_loss.view(batch_size, -1).mean(dim=1)
-        #         map_loss_to_add = map_loss.sum().item()
-        #     else:
-        #         map_loss = self.criterion_ce_map(map_flat, locations_flat)
-        #         map_loss_to_add = map_loss.item()
-        #     return map_loss, map_loss_to_add
-        # else:
 
         if noreduce:
             all_map_loss = self.criterion_bce_full_noreduce(map, locations)

@@ -21,10 +21,74 @@ from sklearn.metrics.pairwise import euclidean_distances
 from skimage.transform import warp_polar
 from itertools import combinations
 from itertools import combinations_with_replacement, permutations
+from collections import Counter
+from pathlib import Path
+import json
 
 # import symbolic_model as solver
 from letters import get_alphabet, get_alphabet_5x5
 import utils
+
+
+def balanced_pair_split(k, labels=None, seed=0):
+    if labels is None:
+        labels = [f"L{i}" for i in range(k)]
+    else:
+        labels = list(labels)
+        if len(labels) != k:
+            raise ValueError("labels length must equal k")
+    all_pairs = list(combinations(labels, 2))
+    n_total_pairs = len(all_pairs)
+
+    rng = np.random.default_rng(seed)
+    def split_once():
+        idx = rng.permutation(np.arange(n_total_pairs))
+        half = n_total_pairs // 2
+        return [all_pairs[i] for i in idx[:half]], [all_pairs[i] for i in idx[half:]]
+
+    def counts(group):
+        c = Counter()
+        for a,b in group:
+            c[a]+=1; c[b]+=1
+        return c
+
+    for _ in range(2000):
+        A,B = split_once()
+        cA, cB = counts(A), counts(B)
+        if all(abs(cA[l]-cB[l]) <= 1 for l in labels):
+            return A, B
+    raise RuntimeError("Could not find balanced split")
+
+@staticmethod
+def assign_min_background(num, shapes_set, fixed_background_shape, task_type='min'):
+    """
+    Assigns one special shape (min or max) and the rest as background.
+    Returns a shuffled list of shape indices.
+    """
+    # Choose special and background shapes
+    background_shape = fixed_background_shape
+    candidate_shapes = [s for s in shapes_set if s != background_shape]
+    if not candidate_shapes:
+        print("Warning: No candidate shapes found different from background.")
+        candidate_shapes = [background_shape]
+    special_shape = np.random.choice(candidate_shapes)
+
+    # Decide counts
+    if task_type == 'min':
+        # special gets fewer than background
+        special_count = np.random.randint(1, num)
+        background_count = num - special_count
+        if background_count <= special_count:
+            background_count = special_count + 1
+            special_count = num - background_count
+    else:  # 'max'
+        # special gets more than background
+        special_count = np.random.randint((num // 2) + 1, num)
+        background_count = num - special_count
+
+    shape_assign = [special_shape] * special_count + [background_shape] * background_count
+    np.random.shuffle(shape_assign)
+    return np.array(shape_assign, dtype=int)
 
 @staticmethod
 def assign_minmax_class_counts(classes, num_targets):
@@ -40,18 +104,24 @@ def assign_minmax_class_counts(classes, num_targets):
     n_classes = len(classes)
     possible_counts = []
 
+    # generate all possible count combinations
     for counts in combinations_with_replacement(range(1, num_targets + 1), n_classes):
         if sum(counts) == num_targets:
-            # Forbid all counts equal
+            # Forbid all counts equal case
             if len(set(counts)) == 1:
                 continue
+            # add all permutations of this count combination
             for perm in set(permutations(counts)):
                 possible_counts.append(perm)
 
     if not possible_counts:
         raise ValueError(f"Cannot assign {num_targets} targets to {n_classes} classes with not-all-equal counts.")
 
-    chosen_counts = possible_counts[np.random.choice(len(possible_counts))]
+    # sample an index according to probs
+    idx = np.random.choice(len(possible_counts))
+    chosen_counts = possible_counts[idx]
+
+    # build labels list
     labels = []
     for cls, count in zip(classes, chosen_counts):
         labels.extend([cls] * count)
@@ -217,7 +287,6 @@ class DatasetGenerator:
                     coordy = noise_y + y
                 glimpse_coords.append((coordx, coordy))
 
-
             # noise_x = np.random.normal(loc=0, scale=nl/2, size=n_glimpses)
             # noise_y = np.random.normal(loc=0, scale=nl/2, size=n_glimpses)
             # Sample from 2d Gaussian instead of 2 1d
@@ -285,7 +354,7 @@ class DatasetGenerator:
         return shape_coords
     
     def get_shape_coords(self, glimpse_coords, shapes_set, distinctiveness,
-                         objects2count, distractors, task_type):
+                         objects2count, distractors, task_type, chosen_pair=None):
         """Generate glimpse shape feature vectors.
 
         Each object is randomly assigned one shape. The shape feature
@@ -328,89 +397,43 @@ class DatasetGenerator:
         item_coords = np.array([self.possible_centroids[i] for i in item_slots])
         num = len(objects2count)
 
-        if distinctiveness == 0:  # All shapes in the image will be the same
-            shape = np.random.choice(shapes_set)
-            shape_assign = np.repeat(shape, num)
+        # pair-split enforcement
+        if (chosen_pair is not None):
+            a, b = chosen_pair  # actual shape IDs
+            # Use your existing routine: two classes, sum to num, not-all-equal
+            shape_assign = assign_minmax_class_counts([a, b], num)
         else:
-            shapes_copy = shapes_set.copy()
-            random.shuffle(shapes_copy)
-            if getattr(self.conf, 'not_all_equal_class_counts', False):
-                # Use the not-all-equal assignment for each distinctiveness value
-                if distinctiveness == 1:
-                    shape_assign = assign_minmax_class_counts(shapes_copy, num)
-                elif distinctiveness == 0.6:
-                    shape_subset = shapes_copy[:3]
-                    shape_assign = assign_minmax_class_counts(shape_subset, num)
-                elif distinctiveness == 0.3:
-                    shape_subset = shapes_copy[:2]
-                    shape_assign = assign_minmax_class_counts(shape_subset, num)
+            if distinctiveness == 0:  # All shapes in the image will be the same
+                shape = np.random.choice(shapes_set)
+                shape_assign = np.repeat(shape, num)
             else:
-                if distinctiveness == 1: # As distinctive as possible
-                    shape_assign = np.tile(shapes_copy, int(np.ceil(num/len(shapes_set))))[:num]
-                elif distinctiveness == 0.6:
-                    shape_subset = shapes_copy[:3] # 3 out of 4 shapes (assuming 4 total shapes)
-                    shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
-                elif distinctiveness == 0.3:
-                    shape_subset = shapes_copy[:2] # 2/4 shapes
-                    shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
-
-            # --- inside get_shape_coords, where you currently handle not_all_equal_class_counts ---
-            if getattr(self.conf, 'fixed_background', False):
-                # choose background (filler) as before
-                if hasattr(self.conf, 'fixed_background_shape') and self.conf.fixed_background_shape in shapes_set:
-                    background_shape = self.conf.fixed_background_shape
+                shapes_copy = shapes_set.copy()
+                random.shuffle(shapes_copy)
+                if getattr(self.conf, 'not_all_equal_class_counts', False):
+                    # Use the not-all-equal assignment for each distinctiveness value
+                    if distinctiveness == 1:
+                        shape_assign = assign_minmax_class_counts(shapes_copy, num)
+                    elif distinctiveness == 0.6:
+                        shape_subset = shapes_copy[:3]
+                        shape_assign = assign_minmax_class_counts(shape_subset, num)
+                    elif distinctiveness == 0.3:
+                        shape_subset = shapes_copy[:2]
+                        shape_assign = assign_minmax_class_counts(shape_subset, num)
                 else:
-                    background_shape = next((s for s in shapes_set if s != distractor_shape), shapes_set[0])
-
-                candidate_shapes = [s for s in shapes_set if s != background_shape]
-                if not candidate_shapes:
-                    candidate_shapes = [s for s in range(self.n_shapes) if s not in (background_shape, distractor_shape)]
-                if not candidate_shapes:
-                    candidate_shapes = [background_shape]
-
-                # pick one special shape
-                special_shape = np.random.choice(candidate_shapes)
-
-                # Try a few times using your helper, but enforce the inequality depending on challenge:
-                desired_ok = False
-                max_tries = 10
-                for _try in range(max_tries):
-                    shape_assign = assign_minmax_class_counts([background_shape, special_shape], num)
-                    # count occurrences
-                    b_count = int(np.sum(np.array(shape_assign) == background_shape))
-                    s_count = int(np.sum(np.array(shape_assign) == special_shape))
-
-                    if task_type == 'min' and b_count > s_count:
-                        desired_ok = True
-                        break
-                    if task_type == 'max' and b_count < s_count:
-                        desired_ok = True
-                        break
-                    # otherwise retry
-
-                if not desired_ok:
-                    # fallback deterministic construction that respects the inequality:
-                    if task_type == 'min':
-                        # background must be the max: give background > special
-                        # pick special_count between 1 and num//2 (inclusive)
-                        max_special = max(1, num // 2)
-                        special_count = np.random.randint(1, max_special + 1)
-                        background_count = num - special_count
-                    else:  # 'max'
-                        # background must be the min: give background < special
-                        min_special = max(1, (num // 2) + 1)
-                        special_count = np.random.randint(min_special, num + 1)
-                        if special_count >= num:
-                            special_count = num - 1
-                        background_count = num - special_count
-
-                    shape_assign = [special_shape] * special_count + [background_shape] * background_count
-                    np.random.shuffle(shape_assign)
-
-                # make sure it's a numpy array of ints for downstream code
-                shape_assign = np.array(shape_assign, dtype=int)
+                    if distinctiveness == 1: # As distinctive as possible
+                        shape_assign = np.tile(shapes_copy, int(np.ceil(num/len(shapes_set))))[:num]
+                    elif distinctiveness == 0.6:
+                        shape_subset = shapes_copy[:3] # 3 out of 4 shapes (assuming 4 total shapes)
+                        shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
+                    elif distinctiveness == 0.3:
+                        shape_subset = shapes_copy[:2] # 2/4 shapes
+                        shape_assign = np.tile(shape_subset, int(np.ceil(num/len(shape_subset))))[:num]
 
 
+                # --- inside get_shape_coords, where you currently handle not_all_equal_class_counts ---
+                if getattr(self.conf, 'fixed_background', False):
+                    if hasattr(self.conf, 'fixed_background_shape') and self.conf.fixed_background_shape in shapes_set:
+                        shape_assign = assign_min_background(num, shapes_set, self.conf.fixed_background_shape, task_type)
 
         dist_map = {dist_loc: distractor_shape for dist_loc in distractors}
         shape_map = {object: shape for (object, shape) in zip(objects2count, shape_assign)}
@@ -430,7 +453,7 @@ class DatasetGenerator:
         # assert np.all(shape_coords.sum(axis=1) > 0)
         return shape_coords, shape_map, shape_hist
 
-    def generate_one_example(self, num, n_disract, n_unique, config):
+    def generate_one_example(self, num, n_disract, n_unique, config, chosen_pair=None):
         """Synthesize a single toy glimpse sequence and apply symbolic solver."""
         distinctiveness = config.distinctive
         # distract = config.distract
@@ -495,7 +518,34 @@ class DatasetGenerator:
         # print(f'Generating example with num: {num}, n_distract: {n_disract}, n_unique: {n_unique}, shapes_set: {shapes_set}, distinctiveness: {distinctiveness}, challenge: {challenge}, policy: {policy}')
         xy_coords, objects, noiseless_coords, to_count, distractors = self.get_xy_coords(num, n_disract, noise_level, challenge, policy)
         # print(f'num: {num}, objects: {objects}, to_count: {to_count}, distractors: {distractors}')
-        shape_coords, shape_map, shape_hist = self.get_shape_coords(xy_coords, shapes_set, distinctiveness, to_count, distractors, task_type)
+        shape_coords, shape_map, shape_hist = self.get_shape_coords(xy_coords, shapes_set, distinctiveness, to_count, distractors, task_type, chosen_pair)
+
+        
+        # Generate one-hot encoding of shape identity for each glimpse
+        # shape_map: {slot_index: shape_id}
+        num_shapes = self.n_shapes
+        glimpse_onehot = np.zeros((self.n_glimpses, num_shapes), dtype=np.float32)
+
+        # # record which slot each glimpse looked at – saved in xy_coords/objects earlier
+        # print("--- objects debug ---")
+        # print("objects (glimpsed slots):", objects)
+        # print("to_count (target slots):", to_count)
+        # print("slot → shape (sample):", [(slot, shape_map[slot]) for slot in objects])
+        # print("----------------------")
+
+        for g_idx, slot_idx in enumerate(objects):
+            shape_id = shape_map[slot_idx]
+            glimpse_onehot[g_idx, shape_id] = 1.0
+
+        #     print("glimpse_onehot shape:", glimpse_onehot.shape)
+        #     print("glimpse_onehot:", glimpse_onehot)
+        #     #print("row sums (first 5):", glimpse_onehot[:5])
+        #     for g in range(min(12, self.n_glimpses)):
+        #         cols = np.where(glimpse_onehot[g] == 1.0)[0]
+        #         print(f"  glimpse {g} → shape ids {cols.tolist()}")
+        #     print("shape_map sample:", list(shape_map.items()))
+        #     print("----------------------")
+
         # print(f'shape_coords:\n{shape_coords.shape}, shape_map: {shape_map}, shape_hist: {shape_hist}')
         min_count = np.min([c for c in shape_hist if c > 0]) if np.any(shape_hist) else 0 # minimum number of any shape in the image
         max_count = np.max([c for c in shape_hist if c > 0]) if np.any(shape_hist) else 0
@@ -580,6 +630,7 @@ class DatasetGenerator:
                         'numerosity_min': min_count, # minimum number of any shape in the image
                         'numerosity_max': max_count, # maximum number of any shape in the image
                         'num_unique': n_unique,
+                        'glimpse_shape_onehot': glimpse_onehot, # one-hot encoding of shape identity for each glimpse
                         # 'num_min': example.min_num,
                         # 'predicted_num': example.pred_num, 'count': example.count,
                         'locations': filled_locations,
@@ -635,12 +686,24 @@ class DatasetGenerator:
             n_distract = np.zeros_like(nums)
             n_unique = np.empty_like(nums) * np.nan
 
+
+        # build a schedule of pairs so each pair appears at least once
+        pair_schedule = None
+        if getattr(config, 'allowed_pairs', None):
+            P = [tuple(sorted(p)) for p in config.allowed_pairs]
+            # ensure at least one sample per pair, then fill the rest randomly
+            repeats = n_examples // len(P)
+            rem = n_examples % len(P)
+            pair_schedule = P * repeats + random.sample(P, rem) if rem > 0 else P * repeats
+            random.shuffle(pair_schedule)  # randomize order while preserving coverage
+
         # data = [self.generate_one_example(nums[i], n_distract[i], n_unique[i], config) for i in range(n_examples)]
         data = []
         for i in tqdm(range(n_examples)):
             # if not i % 10:
                 # print(f'Generating info for image {i}', end='\r')
-            example = self.generate_one_example(nums[i], n_distract[i], n_unique[i], config)
+            chosen_pair = pair_schedule[i] if pair_schedule is not None else None
+            example = self.generate_one_example(nums[i], n_distract[i], n_unique[i], config, chosen_pair)
             data.append(example)
         # data = [generate_one_example(nums[i], noise_level, pass_count_range, num_range, shapes_set, n_shapes, same) for i in range(n_examples)]
         df = pd.DataFrame(data)
@@ -664,6 +727,7 @@ class DatasetGenerator:
                 'numerosity_min': (["image"], np.stack(df['numerosity_min'].to_numpy())),
                 'numerosity_max': (["image"], np.stack(df['numerosity_max'].to_numpy())),
                 'num_unique': (["image"], np.stack(df['num_unique'].to_numpy())),
+                'glimpse_shape_onehot': (["image", "glimpse", "shape"], np.stack(df['glimpse_shape_onehot'].to_numpy())),
                 # 'num_min': (["image"], np.stack(df['num_min'].to_numpy())),
                 # 'predicted_num': (["image"], np.stack(df['predicted_num'].to_numpy())),
                 'locations': (["image", "slot"], np.stack(df['locations'].to_numpy())),
@@ -947,7 +1011,6 @@ def process_args(conf):
         conf.shapes = [letter_map[i] for i in conf.shapes]
     return conf
 
-
 def main():
     parser = argparse.ArgumentParser(description='PyTorch network settings')
     parser.add_argument('--min_pass', type=int, default=0)
@@ -990,7 +1053,17 @@ def main():
     parser.add_argument('--n_glimpses', type=int, default=12, help='how many glimpses to generate per image')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--transform', action='store_true', default=False, help='Whether to rotate and flip images to diversify')
+    parser.add_argument('--pair_split', action='store_true', default=False, help='Use balanced pair split; force exactly two shapes per image from the chosen half')
+    parser.add_argument('--pair_group', type=str, default='train', choices=['train','test'], help='Which half of the split to use')
+    parser.add_argument('--pair_seed', type=int, default=0, help='Seed for pair split')
+
     conf = parser.parse_args()
+
+    if conf.pair_split:
+        labels = conf.shapes
+        train_pairs_letters, test_pairs_letters = balanced_pair_split(k=len(labels), labels=labels, seed=conf.pair_seed)
+        conf.allowed_pairs_letters = train_pairs_letters if conf.pair_group == 'train' else test_pairs_letters
+
     if conf.same: # so you can still use this input argument (but the variable is not used later on)
         conf.distinctive = 0
 
@@ -1027,6 +1100,19 @@ def main():
     trunc = 'trunc' if conf.truncate else ''
     logscale = '_logscale' if conf.logscale else ''
 
+
+    # build the split if requested
+    if conf.pair_split:
+        labels = conf.shapes
+        train_pairs, test_pairs = balanced_pair_split(k=len(labels), labels=labels, seed=conf.pair_seed)
+        # (a,b) are actual shape IDs already; normalize tuple order
+        train_pairs = [tuple(sorted((int(a), int(b)))) for a,b in train_pairs]
+        test_pairs  = [tuple(sorted((int(a), int(b)))) for a,b in test_pairs]
+        conf.allowed_pairs = train_pairs if conf.pair_group == 'train' else test_pairs
+    else:
+        conf.allowed_pairs = None
+
+
     # define_globals(conf)
     generator = DatasetGenerator(conf)
     toydata = generator.generate_dataset(conf)  # Generate toy version, apply symbolic model
@@ -1035,7 +1121,8 @@ def main():
     
     # dirname = 'datasets/image_sets'
     dirname = 'datasets/image_sets_min_max'
-    fname_gw = f'{dirname}/num{conf.min_num}-{conf.max_num}_nl-{conf.noise_level}{trunc}{logscale}_{shapes}{distinctiveness}{challenge}_grid{conf.grid}_policy-{policy}_lum{conf.luminances}_{transform}{n_glimpses}{conf.size}'
+    pair_suffix = f'_pair-{conf.pair_group}' if getattr(conf, "pair_split", False) else ''
+    fname_gw = f'{dirname}/num{conf.min_num}-{conf.max_num}_nl-{conf.noise_level}{trunc}{logscale}_{shapes}{distinctiveness}{challenge}{pair_suffix}_grid{conf.grid}_policy-{policy}_lum{conf.luminances}_{transform}{n_glimpses}{conf.size}'
     if not os.path.isdir(fname_gw):
             os.makedirs(fname_gw)
             
@@ -1070,6 +1157,17 @@ def main():
                
     print(f'Saving {fname_gw}.nc')
     data.to_netcdf(fname_gw + '.nc')
+
+    if conf.pair_split:
+        pairs_log = {
+        "pair_group": conf.pair_group,
+        "pairs": conf.allowed_pairs,  
+        "letter pairs": conf.allowed_pairs_letters,         
+        "pair_seed": getattr(conf, "pair_seed", None),
+        }
+        log_path = Path(fname_gw).with_suffix(".pairs.json")
+        with open(log_path, "w") as f:
+            json.dump(pairs_log, f, indent=1)
 
 if __name__ == '__main__':
     main()

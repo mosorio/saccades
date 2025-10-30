@@ -59,7 +59,9 @@ def choose_model(config, model_dir):
     # height, width = grid_to_im_shape[grid]
     map_size = grid**2
     
-    if 'symbolic' in shape_format:
+    if 'onehot' in shape_format:
+        sh_sz = n_shapes
+    elif 'symbolic' in shape_format:
         sh_sz = n_shapes#20#25
         if config.sort and config.same:
             sh_sz = 2
@@ -167,7 +169,6 @@ class PretrainedVentral(nn.Module):
         no_pretrain = kwargs['no_pretrain']
         penult_size = 10#8
         self.xy_size = kwargs['xy_sz'] if 'xy_sz' in kwargs.keys() else 2
-        count_hidden_dim = kwargs['count_hidden_dim'] if 'count_hidden_dim' in kwargs.keys() else 128
 
         if self.train_on == 'xy':
             shape_rep_len = 0
@@ -205,7 +206,7 @@ class PretrainedVentral(nn.Module):
                 state_dict = torch.load(ventral_file, map_location=map_location)
                 self.ventral.load_state_dict(state_dict)
 
-        self.rnn = RNNClassifier2stream(shape_rep_len, hidden_size, map_size, output_size, count_hidden_dim, **kwargs)
+        self.rnn = RNNClassifier2stream(shape_rep_len, hidden_size, map_size, output_size, **kwargs)
         self.n_classes = self.rnn.n_classes
         self.map_classes = getattr(self.rnn, 'map_classes', None)
         self.initHidden = self.rnn.initHidden
@@ -258,7 +259,7 @@ class RNNClassifier2stream(nn.Module):
     
     Used for simple counting as is and as part of PretrainVentral for the
     distractor task."""
-    def __init__(self, pix_size, hidden_size, map_size, output_size, count_hidden_dim=128, **kwargs):
+    def __init__(self, pix_size, hidden_size, map_size, output_size, **kwargs):
         super().__init__()
         self.train_on = kwargs['train_on']
         self.output_size = output_size
@@ -295,45 +296,16 @@ class RNNClassifier2stream(nn.Module):
         self.rnn = RNN(embedding_size, hidden_size, hidden_size, self.act)
         self.drop_layer = nn.Dropout(p=drop)
 
-        if self.task_type == 'min':
-
-            # map_classes = self.map_classes if self.map_classes is not None else self.n_shapes
-            # self.map_classes = map_classes
-            # self.map_readout = nn.Linear(hidden_size, self.map_size * (map_classes + 1))
-
-            # print(f'RNNClassifier2stream for min: map_classes {map_classes}, count_hidden_dim {count_hidden_dim}')
-            
-            # self.count_fc1 = nn.Linear(map_classes, count_hidden_dim)
-            # self.count_relu = nn.ReLU()
-            # self.count_fc2 = nn.Linear(count_hidden_dim, output_size)
-
-            # # self.num_readout = nn.Linear(1, output_size, bias=False)   ### NEW ### (min estimation output)
-
-            # self.initHidden = self.rnn.initHidden
-            # self.LReLU = nn.LeakyReLU(0.1)
-            self.map_readout = nn.Linear(hidden_size, map_size)
-            if self.par:
-                self.notmap = nn.Linear(hidden_size, map_size)
-                self.num_readout = nn.Linear(map_size * 2, output_size, bias=False)
-            else:
-                self.num_readout = nn.Linear(map_size, output_size, bias=False)
-
-            self.initHidden = self.rnn.initHidden
-            self.sigmoid = nn.Sigmoid()
-            self.LReLU = nn.LeakyReLU(0.1)
-
+        self.map_readout = nn.Linear(hidden_size, map_size)
+        if self.par:
+            self.notmap = nn.Linear(hidden_size, map_size)
+            self.num_readout = nn.Linear(map_size * 2, output_size, bias=False)
         else:
+            self.num_readout = nn.Linear(map_size, output_size, bias=False)
 
-            self.map_readout = nn.Linear(hidden_size, map_size)
-            if self.par:
-                self.notmap = nn.Linear(hidden_size, map_size)
-                self.num_readout = nn.Linear(map_size * 2, output_size, bias=False)
-            else:
-                self.num_readout = nn.Linear(map_size, output_size, bias=False)
-
-            self.initHidden = self.rnn.initHidden
-            self.sigmoid = nn.Sigmoid()
-            self.LReLU = nn.LeakyReLU(0.1)
+        self.initHidden = self.rnn.initHidden
+        self.sigmoid = nn.Sigmoid()
+        self.LReLU = nn.LeakyReLU(0.1)
 
 
     def forward(self, x, hidden):
@@ -361,65 +333,26 @@ class RNNClassifier2stream(nn.Module):
         x, hidden = self.rnn(x, hidden)
         x = self.drop_layer(x)
 
-        if self.task_type == 'min':
-            # map_logits = self.map_readout(x)  # [batch, map_size * (map_classes+1)]
-            # map_logits = map_logits.view(-1, self.map_size, self.map_classes + 1)
-            # slot_probs = nn.functional.softmax(map_logits, dim=-1)  # per-slot class probs
-
-            # # Aggregate counts (ignore background=0)
-            # counts = slot_probs[:, :, 1:self.map_classes + 1].sum(dim=1)  # [batch, map_classes]
-
-            # # Learned mapping from counts → min prediction
-            # h = self.count_relu(self.count_fc1(counts))
-            # num = self.count_fc2(h)  # [batch, output_size]
-
-            # return num, pix, map_logits, hidden, x, counts
-
-            map_ = self.map_readout(x)
-
-            if self.sig:
-                sig = self.sigmoid(map_)
-            else:
-                sig = self.LReLU(map_)
-            if self.detach:
-                map_to_pass_on = torch.round(sig.detach()).clone()
-            else:
-                map_to_pass_on = sig
-
-            # penult = self.LReLU(self.after_map(map_to_pass_on))
-            # function fom map to number should be linear so best to omit notlinearity, although because you allready applied sigmoid, lrelu wouldn't do anything anyway
-            # penult = self.after_map(map_to_pass_on) # this extra layer probably isn't helping with anything and just increases the number of params
-            if self.par:
-                # Two parallel layers, one to be a map, the other not
-                notmap = self.notmap(x)
-                penult = torch.cat((map_to_pass_on, notmap), dim=1)
-            else:
-                penult = map_to_pass_on
-
-            num = self.num_readout(penult)
-            return num, pix, map_, hidden, x, penult
-
+        map_ = self.map_readout(x)
+        # If not including the map loss term in the optimized objective function, this sigmoid is unncessary and 
+        # contributes to vanishing gradients. Therefore, when use_loss == num, replace with LReLu.
+        if self.sig:
+            sig = self.sigmoid(map_)
         else:
-            map_ = self.map_readout(x)
-            # If not including the map loss term in the optimized objective function, this sigmoid is unncessary and 
-            # contributes to vanishing gradients. Therefore, when use_loss == num, replace with LReLu.
-            if self.sig:
-                sig = self.sigmoid(map_)
-            else:
-                sig = self.LReLU(map_)
-            if self.detach:
-                map_to_pass_on = torch.round(sig.detach()).clone()
-            else:
-                map_to_pass_on = sig
+            sig = self.LReLU(map_)
+        if self.detach:
+            map_to_pass_on = torch.round(sig.detach()).clone()
+        else:
+            map_to_pass_on = sig
 
-            # penult = self.LReLU(self.after_map(map_to_pass_on))
-            # function fom map to number should be linear so best to omit notlinearity, although because you allready applied sigmoid, lrelu wouldn't do anything anyway
-            # penult = self.after_map(map_to_pass_on) # this extra layer probably isn't helping with anything and just increases the number of params
-            if self.par:
-                # Two parallel layers, one to be a map, the other not
-                notmap = self.notmap(x)
-                penult = torch.cat((map_to_pass_on, notmap), dim=1)
-            else:
-                penult = map_to_pass_on
-            num = self.num_readout(penult)
-            return num, pix, map_, hidden, x, penult
+        # penult = self.LReLU(self.after_map(map_to_pass_on))
+        # function fom map to number should be linear so best to omit notlinearity, although because you allready applied sigmoid, lrelu wouldn't do anything anyway
+        # penult = self.after_map(map_to_pass_on) # this extra layer probably isn't helping with anything and just increases the number of params
+        if self.par:
+            # Two parallel layers, one to be a map, the other not
+            notmap = self.notmap(x)
+            penult = torch.cat((map_to_pass_on, notmap), dim=1)
+        else:
+            penult = map_to_pass_on
+        num = self.num_readout(penult)
+        return num, pix, map_, hidden, x, penult
