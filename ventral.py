@@ -446,7 +446,7 @@ def test_logpolar(loader, model, which_loss, config):
 
 
 def plot_performance(tr_loss_mse, tr_acc, te_loss_mse, te_acc, base_name, ep):
-    fig_dir = 'figures_min_multiclass/logpolar/ventral/'
+    fig_dir = 'figures/logpolar/ventral/'
     fig, (ax1, ax2) = plt.subplots(1, 2)
     ax1.plot(tr_loss_mse[:ep], label='Train')
     ax1.plot(te_loss_mse[:ep], label='Test')
@@ -881,9 +881,9 @@ def main():
     # model_dir = 'models/toy/letters/ventral'
     # results_dir = 'results/toy/letters/ventral'
     # fig_dir = 'figures/toy/letters/ventral'
-    model_dir = 'models_min_multiclass/logpolar/ventral'
-    results_dir = 'results_min_multiclass/logpolar/ventral'
-    fig_dir = 'figures_min_multiclass/logpolar/ventral'
+    model_dir = 'models/logpolar/ventral'
+    results_dir = 'results/logpolar/ventral'
+    fig_dir = 'figures/logpolar/ventral'
     dir_list = [model_dir, results_dir, fig_dir]
     for directory in dir_list:
         if not os.path.exists(directory):
