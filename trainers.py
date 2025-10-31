@@ -861,7 +861,9 @@ class Trainer():
             target_locations = np.array([np.array([]) if tl is None else tl for tl in image_data.target_coords_scaled[index].values], dtype=object)
             distractor_locations = np.array([np.array([]) if dl is None else dl for dl in image_data.distract_coords_scaled[index].values], dtype=object)
             # Save to file
-            savename = f'activations/{basename}_test-{test_names[ts]}'
+
+            os.makedirs("/mnt/quick/maria/saccades/activations", exist_ok=True)
+            savename = f'/mnt/quick/maria/saccades/activations/{basename}_test-{test_names[ts]}'
 
             # Put into pandas dataframe
             # image_data.loc(index)
@@ -1175,7 +1177,8 @@ class FeedForwardTrainer(Trainer):
             target_locations = np.array([np.array([]) if tl is None else tl for tl in image_data.target_coords_scaled[index].values], dtype=object)
             distractor_locations = np.array([np.array([]) if dl is None else dl for dl in image_data.distract_coords_scaled[index].values], dtype=object)
             # Save to file
-            savename = f'activations/{basename}_test-{test_names[ts]}'
+            os.makedirs("/mnt/quick/maria/saccades/activations", exist_ok=True)
+            savename = f'/mnt/quick/maria/saccades/activations/{basename}_test-{test_names[ts]}'
             # Compressed numpy
             np.savez(savename, numerosity=numerosity, num_distractor=dist_num, 
                     act_premap=premap_act, 
