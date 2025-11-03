@@ -742,23 +742,28 @@ def choose_loader(config):
         val_free.testset = 'validation'
         val_free.viewing = 'free'
         val_free.shapes = config.shapestr
+        val_free.pair_group = 'train'
         val_free.lums = [0.1, 0.4, 0.7]
+
         ood_shape_free = get_loader(OODshape_set, config, batch_size=2500, gaze='free')
         ood_shape_free.testset = 'ood_shape'
         ood_shape_free.viewing = 'free'
         ood_shape_free.shapes = config.testshapestr[-1]
+        ood_shape_free.pair_group = 'test'
         ood_shape_free.lums = val_lums
         
         ood_lum_free = get_loader(OODlum_set, config, batch_size=2500, gaze='free')
         ood_lum_free.testset = 'ood_lum'
         ood_lum_free.viewing = 'free'
         ood_lum_free.shapes = config.shapestr
+        ood_lum_free.pair_group = 'train'
         ood_lum_free.lums = config.lum_sets[-1]
         
         ood_both_free = get_loader(OODboth_set, config, batch_size=2500, gaze='free')
         ood_both_free.testset = 'ood_both'
         ood_both_free.viewing = 'free'
         ood_both_free.shapes = config.testshapestr[-1]
+        ood_both_free.pair_group = 'test'
         ood_both_free.lums = config.lum_sets[-1]
         test_loaders = [val_free, ood_shape_free, ood_lum_free, ood_both_free]
 

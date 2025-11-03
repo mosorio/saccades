@@ -7,6 +7,7 @@ from matplotlib import pyplot as plt
 import seaborn as sns
 from itertools import product
 from scipy.io import savemat
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -805,14 +806,17 @@ class Trainer():
         model.eval()
         device = self.config.device
         softmax = nn.Softmax(dim=1)
-        shape_lum = product(config.test_shapes, config.lum_sets)
+        shape_lum = [(getattr(loader, 'pair_group', None), getattr(loader, 'lums', None))
+             for loader in test_loaders]
+        #shape_lum = product(config.test_shapes, config.lum_sets)
         n_glimpses = config.n_glimpses
         if config.human_sim:
             test_names = ['val_free', 'val_fixed', 'ood_free', 'ood_fixed']
         else:
             test_names = ['validation', 'new-luminances', 'new-shapes', 'new_both']
        
-        sets_to_save = [3] 
+        #sets_to_save = [3]
+        sets_to_save = range(len(test_loaders))
         # 
         for ts, (test_loader, (test_shapes, lums)) in enumerate(zip(test_loaders, shape_lum)):
         # only save new-both test set for now
@@ -861,9 +865,12 @@ class Trainer():
             target_locations = np.array([np.array([]) if tl is None else tl for tl in image_data.target_coords_scaled[index].values], dtype=object)
             distractor_locations = np.array([np.array([]) if dl is None else dl for dl in image_data.distract_coords_scaled[index].values], dtype=object)
             # Save to file
+            # cwd = os.getcwd()
+            # print(cwd)
+            # print(f'activations/{basename}_test-{test_names[ts]}')
+            os.makedirs('activations', exist_ok=True)
+            savename = f'activations/{basename}_test-{test_names[ts]}'
 
-            os.makedirs("/mnt/quick/maria/saccades/activations", exist_ok=True)
-            savename = f'/mnt/quick/maria/saccades/activations/{basename}_test-{test_names[ts]}'
 
             # Put into pandas dataframe
             # image_data.loc(index)
@@ -889,7 +896,7 @@ class Trainer():
                         'target_locations': target_locations,
                         'distractor_locations': distractor_locations}
             # MATLAB
-            savemat(savename + '.mat', to_save)
+            # savemat(savename + '.mat', to_save)
 
     def get_map_loss(self, map, locations, noreduce=False):
 
@@ -1177,8 +1184,8 @@ class FeedForwardTrainer(Trainer):
             target_locations = np.array([np.array([]) if tl is None else tl for tl in image_data.target_coords_scaled[index].values], dtype=object)
             distractor_locations = np.array([np.array([]) if dl is None else dl for dl in image_data.distract_coords_scaled[index].values], dtype=object)
             # Save to file
-            os.makedirs("/mnt/quick/maria/saccades/activations", exist_ok=True)
-            savename = f'/mnt/quick/maria/saccades/activations/{basename}_test-{test_names[ts]}'
+            os.makedirs("activations", exist_ok=True)
+            savename = f'activations/{basename}_test-{test_names[ts]}'
             # Compressed numpy
             np.savez(savename, numerosity=numerosity, num_distractor=dist_num, 
                     act_premap=premap_act, 
