@@ -326,7 +326,7 @@ class Trainer():
         confusion_matrix = None
         test_results = pd.DataFrame()
         # for i, (input, target, locations, shape_label, pass_count) in enumerate(loader):
-        for i, (_, input, target, num_dist, all_loc, shape_label, pass_count) in enumerate(loader):
+        for i, (_, input, target, num_dist, all_loc, shape_label, pass_count, *extra) in enumerate(loader):
             input = input.to(device)
             input_dim = input.shape[0]
             n_glimpses = input.shape[1]
@@ -429,7 +429,7 @@ class Trainer():
         shape_epoch_loss = 0
         #task_type = getattr(self.config, 'task_type', 'count')
 
-        for i, (_, input, target, num_dist, locations, shape_label, _) in enumerate(loader):
+        for i, (_, input, target, num_dist, locations, shape_label, _, *extra) in enumerate(loader):
             # assert all(locations.sum(dim=1) == target)
             input = input.to(config.device)
             n_glimpses = input.shape[1]
@@ -837,13 +837,30 @@ class Trainer():
             predicted_num = np.zeros((test_size, model.output_size))
             correct = np.zeros((test_size,))
             index = np.zeros((test_size,))
+
+            object_coords = np.zeros((test_size, n_glimpses, 2))
+            shape_map_  = np.zeros((test_size, 36))
+            locations_min = np.zeros((test_size, 36))
+            locations_max = np.zeros((test_size, 36))
+            numerosity_min = np.zeros((test_size,))
+            numerosity_max = np.zeros((test_size,))
             # Loop through minibatches
-            for i, (ind, input_, target, num_dist, all_loc, shape_label, pass_count) in enumerate(test_loader):
+            # for i, (ind, input_, target, num_dist, all_loc, shape_label, pass_count) in enumerate(test_loader):
+            for _, batch in enumerate(test_loader):
+                (ind, input_, target, num_dist, all_loc, shape_label, pass_count, obj_coords, shape_map, loc_min, loc_max, num_min, num_max) = batch   
+                
                 input_ = input_.to(device)
                 batch_size = input_.shape[0]
                 index[start: start + batch_size] = ind.numpy()
                 numerosity[start: start + batch_size] = target.cpu().detach().numpy()
                 dist_num[start: start + batch_size] = num_dist.cpu().detach().numpy()
+
+                object_coords[start:start + batch_size] = obj_coords.detach().cpu().numpy()
+                shape_map_[start:start + batch_size] = shape_map.detach().cpu().numpy()
+                locations_min[start:start + batch_size] = loc_min.detach().cpu().numpy()
+                locations_max[start:start + batch_size] = loc_max.detach().cpu().numpy()
+                numerosity_min[start:start + batch_size] = num_min.detach().cpu().numpy()
+                numerosity_max[start:start + batch_size] = num_max.detach().cpu().numpy()
 
                 hidden = model.initHidden(batch_size).to(device)
                 xy = input_[:, :, :2].cpu().detach().numpy()
@@ -881,13 +898,17 @@ class Trainer():
             # df = df.join(image_data)
             
             # Compressed numpy
-            np.savez(savename, numerosity=numerosity, num_distractor=dist_num, 
+            np.savez(savename, numerosity=numerosity, 
                     act_hidden=hidden_act, 
                     # act_premap=premap_act, act_penult=penult_act, 
                     predicted_num=predicted_num, correct=correct,
                     glimpse_xy=glimpse_coords, 
-                    target_locations=target_locations,
-                    distractor_locations=distractor_locations)
+                    object_coords=object_coords,
+                    shape_map_=shape_map_,
+                    locations_min=locations_min,
+                    locations_max=locations_max,
+                    numerosity_min=numerosity_min,
+                    numerosity_max=numerosity_max)
             to_save = {'numerosity':numerosity, 'num_distractor':dist_num, 
                         'act_hidden':hidden_act, 
                         # 'act_premap':premap_act, 'act_penult':penult_act, 

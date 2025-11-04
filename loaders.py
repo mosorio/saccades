@@ -200,6 +200,21 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
     if target_type == 'all':
         count_loc = all_loc
 
+    object_coords_array = np.array(dataset['object_coords'].values.tolist(), dtype=np.float32)
+    object_coords = torch.tensor(object_coords_array).float().to(config.device)
+
+    shape_map_array = dataset['locations_class_index'].values.astype(np.int64)
+    shape_map = torch.tensor(shape_map_array).long().to(config.device)
+
+    locations_min_array = dataset['locations_class_min'].values.astype(np.float32)
+    locations_class_min = torch.tensor(locations_min_array).float().to(config.device)
+
+    locations_max_array = dataset['locations_class_max'].values.astype(np.float32)
+    locations_class_max = torch.tensor(locations_max_array).float().to(config.device)
+
+    numerosity_min_tensor = torch.tensor(dataset['numerosity_min'].values).long().to(config.device)
+    numerosity_max_tensor = torch.tensor(dataset['numerosity_max'].values).long().to(config.device)
+
     ### IMAGE INPUT ###
     if config.whole_image:
         image_array = dataset['noised_image'].values
@@ -394,7 +409,9 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
     elif model_type == 'map2num_decoder':
         dset = TensorDataset(index, count_loc, count_num, dist_num, count_loc, pass_count)
     else:  
-        dset = TensorDataset(index, input, count_num, dist_num, count_loc, shape_label, pass_count)
+        dset = TensorDataset(index, input, count_num, dist_num, count_loc, shape_label, pass_count,
+                             object_coords, shape_map, locations_class_min, locations_class_max,
+                             numerosity_min_tensor, numerosity_max_tensor)
         # dset = TensorDataset(input, count_num, dist_num, count_loc, shape_label, pass_count)
         # dset = TensorDataset(input, target, all_loc, shape_label, pass_count)
         # dset = TensorDataset(input, target, true_loc, None, shape_label, pass_count)

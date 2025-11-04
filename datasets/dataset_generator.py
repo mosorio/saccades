@@ -24,6 +24,8 @@ from itertools import combinations_with_replacement, permutations
 from collections import Counter
 from pathlib import Path
 import json
+from math import ceil
+from collections import defaultdict
 
 # import symbolic_model as solver
 from letters import get_alphabet, get_alphabet_5x5
@@ -686,26 +688,102 @@ class DatasetGenerator:
             n_distract = np.zeros_like(nums)
             n_unique = np.empty_like(nums) * np.nan
 
+        # --- Decide which label we're balancing ---
+        if config.task_type == 'min':
+            label_key = 'numerosity_min'
+            label_range = set()
+            for n in range(config.min_num, config.max_num + 1):
+                half = n // 2
+                for m in range(1, half + 1):
+                    if n % 2 == 0 and m == half:  # skip equal split when forbidden
+                        continue
+                    label_range.add(m)
+            # print(label_range)
+        elif config.task_type == 'max':
+            label_key = 'numerosity_max'
+            label_range = set()
+            for n in range(config.min_num, config.max_num + 1):
+                half = n // 2
+                for m in range(1, half + 1):
+                    if n % 2 == 0 and m == half:
+                        continue
+                    label_range.add(n - m)
+            # print(label_range)
+        else:
+            label_key = 'numerosity_min'
+            label_range = set(range(1, ceil(config.max_num / 2) + 1))
 
-        # build a schedule of pairs so each pair appears at least once
+        label_target = ceil(config.size / len(label_range))
+        # print(label_target)
+        label_counts = defaultdict(int)
+
+        # --- Prepare pairs ---
         pair_schedule = None
+        pair_target = None
         if getattr(config, 'allowed_pairs', None):
+            # List of allowed pairs
             P = [tuple(sorted(p)) for p in config.allowed_pairs]
-            # ensure at least one sample per pair, then fill the rest randomly
+            #pair_schedule = P * (config.size // len(P)) + P[: config.size % len(P)]
             repeats = n_examples // len(P)
             rem = n_examples % len(P)
             pair_schedule = P * repeats + random.sample(P, rem) if rem > 0 else P * repeats
-            random.shuffle(pair_schedule)  # randomize order while preserving coverage
+            # print('pair_schedule', pair_schedule)
+            random.shuffle(pair_schedule)
+            pair_target = ceil(config.size / len(P))
+            # print('pair_target', pair_target)
+        pair_counts = defaultdict(int)
 
-        # data = [self.generate_one_example(nums[i], n_distract[i], n_unique[i], config) for i in range(n_examples)]
+        # --- Generate balanced examples ---
         data = []
-        for i in tqdm(range(n_examples)):
-            # if not i % 10:
-                # print(f'Generating info for image {i}', end='\r')
-            chosen_pair = pair_schedule[i] if pair_schedule is not None else None
-            example = self.generate_one_example(nums[i], n_distract[i], n_unique[i], config, chosen_pair)
+        i = 0
+        while len(data) < config.size:
+            idx = i % len(nums)                      
+            chosen_pair = pair_schedule[idx] if pair_schedule else None
+            example = self.generate_one_example(nums[idx], n_distract[idx],
+                                                n_unique[idx], config, chosen_pair)
+
+            lbl = example.get(label_key, None)
+            if lbl not in label_range:
+                i += 1
+                continue
+
+            # If the label already hit label_target, skip it
+            if label_counts[lbl] >= label_target:
+                i += 1
+                continue
+
+            # If the pair already hit pair_target, skip it
+            if chosen_pair and pair_counts[chosen_pair] >= pair_target:
+                i += 1
+                continue
+
+            label_counts[lbl] += 1
+            if chosen_pair:
+                pair_counts[chosen_pair] += 1
             data.append(example)
-        # data = [generate_one_example(nums[i], noise_level, pass_count_range, num_range, shapes_set, n_shapes, same) for i in range(n_examples)]
+            i += 1
+
+        # print(label_counts)
+
+        # # build a schedule of pairs so each pair appears at least once
+        # pair_schedule = None
+        # if getattr(config, 'allowed_pairs', None):
+        #     P = [tuple(sorted(p)) for p in config.allowed_pairs]
+        #     # ensure at least one sample per pair, then fill the rest randomly
+        #     repeats = n_examples // len(P)
+        #     rem = n_examples % len(P)
+        #     pair_schedule = P * repeats + random.sample(P, rem) if rem > 0 else P * repeats
+        #     random.shuffle(pair_schedule)  # randomize order while preserving coverage
+
+        # # data = [self.generate_one_example(nums[i], n_distract[i], n_unique[i], config) for i in range(n_examples)]
+        # data = []
+        # for i in tqdm(range(n_examples)):
+        #     # if not i % 10:
+        #         # print(f'Generating info for image {i}', end='\r')
+        #     chosen_pair = pair_schedule[i] if pair_schedule is not None else None
+        #     example = self.generate_one_example(nums[i], n_distract[i], n_unique[i], config, chosen_pair)
+        #     data.append(example)
+        # # data = [generate_one_example(nums[i], noise_level, pass_count_range, num_range, shapes_set, n_shapes, same) for i in range(n_examples)]
         df = pd.DataFrame(data)
         return df
     
