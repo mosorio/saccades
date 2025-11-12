@@ -290,9 +290,9 @@ class Trainer():
                 f' Accuracy='
                 f'{test_acc_count[1][0]:.2f}%/{test_acc_count[2][0]:.2f}%/{test_acc_count[3][0]:.2f}%')
             
-            if config.save_act:
-                print('Saving untrained activations...')
-                self.save_activations(self.model, self.test_loaders, base_name + '_init', config)
+            # if config.save_act:
+            #     print('Saving untrained activations...')
+            #     self.save_activations(self.model, self.test_loaders, base_name + '_init', config)
 
         else:
             # Original relational path: evaluate TRAIN and all TEST sets
@@ -437,10 +437,10 @@ class Trainer():
                     if config.use_loss != 'num':
                         print(f'Test Val Map Loss={test_count_map_loss[0][ep]:.4f}')
 
-        # Save network activations
-        if config.save_act:
-            print('Saving activations...')
-            self.save_activations(self.model, self.test_loaders, base_name + '_trained', config)
+        # # Save network activations
+        # if config.save_act:
+        #     print('Saving activations...')
+        #     self.save_activations(self.model, self.test_loaders, base_name + '_trained', config)
 
         # ==========================
         # ===== Pack & return  =====
@@ -704,17 +704,17 @@ class Trainer():
                 # per-slot errors
                 abs_err = (pred_counts - count_targets).abs()
 
-                strict_right = (abs_err == 0).all(dim=1)         # every slot exactly right
-                off_by_one    = (abs_err <= 1).all(dim=1)        # every slot within ±1
-                off_by_more   = (abs_err > 1).any(dim=1)         # at least one slot off by >1
+                # strict_right = (abs_err == 0).all(dim=1)         # every slot exactly right
+                # off_by_one    = (abs_err <= 1).all(dim=1)        # every slot within ±1
+                # off_by_more   = (abs_err > 1).any(dim=1)         # at least one slot off by >1
 
-                strict_rate          = strict_right.float().mean().item() * 100
-                strict_off_by_one    = off_by_one.float().mean().item() * 100
-                strict_off_gt_one    = off_by_more.float().mean().item() * 100  
+                # strict_rate          = strict_right.float().mean().item() * 100
+                # strict_off_by_one    = off_by_one.float().mean().item() * 100
+                # strict_off_gt_one    = off_by_more.float().mean().item() * 100  
 
-                print(f"Right: {strict_rate} %")
-                print(f"Off-by-one: {strict_off_by_one} %")
-                print(f"Off-by-more-than-one: {strict_off_gt_one} %")
+                # print(f"Right: {strict_rate} %")
+                # print(f"Off-by-one: {strict_off_by_one} %")
+                # print(f"Off-by-more-than-one: {strict_off_gt_one} %")
 
                 # if i == 0 and ep % 5 == 0:             # e.g., once every 5 epochs
                 #     for j in range(min(10, count_targets.size(0))):
