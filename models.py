@@ -255,7 +255,7 @@ class PretrainedVentral(nn.Module):
             shape_pred = None
         
         num, pix, map_, hidden, premap, penult = self.rnn(x, hidden)
-        return num, shape_pred, map_, hidden, premap, penult
+        return num, shape_pred, map_, hidden, premap, penult 
 
 class RNNClassifier2stream(nn.Module):
     """Main dual-stream network. 
@@ -411,4 +411,4 @@ class RNNClassifier2stream(nn.Module):
             
             #print("num", num.shape)
 
-        return num, pix, hidden, x
+        return num, pix, map_, hidden, x, penult

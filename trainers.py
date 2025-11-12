@@ -693,7 +693,7 @@ class Trainer():
             hidden = self.model.initHidden(input.shape[0]).to(device)
             n_glimpses = input.shape[1]
             for t in range(n_glimpses):
-                pred_num, pred_shape, hidden, _= self.model(input[:, t, :], hidden)
+                pred_num, pred_shape, map, hidden, _, _= self.model(input[:, t, :], hidden)
                 
 
             if counting:
@@ -960,7 +960,7 @@ class Trainer():
 
             n_glimpses = input.shape[1]
             for t in range(n_glimpses):
-                pred_num, pred_shape, hidden, _ = self.model(input[:, t, :], hidden) # pred_num has shape (B, n_shapes, K+1) (logits).
+                pred_num, pred_shape, map, hidden, _, _ = self.model(input[:, t, :], hidden) # pred_num has shape (B, n_shapes, K+1) (logits).
                 
             if counting:
                 count_targets = target.to(config.device)  # shape (B, n_shapes), values in 0..K
