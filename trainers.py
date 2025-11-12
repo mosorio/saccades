@@ -66,7 +66,14 @@ class Trainer():
         self.train_loader, self.test_loaders = loaders
         self.config = config
         self.current_map_f1 = 0
-        self.task_type = 'min' if getattr(config, 'challenge', '') == 'min' else 'count'
+        self.head_mode = getattr(config, 'head', 'relational')
+        self.n_shapes = getattr(config, 'n_shapes', 9)
+        #self.n_shapes = getattr(config, 'max_num', 8)
+
+        # Criteria for counting head (per-class CE)
+        self.criterion_count_ce = nn.CrossEntropyLoss()
+        self.criterion_count_ce_noreduce = nn.CrossEntropyLoss(reduction='none')
+
         # Set up optimizer and scheduler
         if config.opt == 'SGD':
             start_lr = 0.01
@@ -105,8 +112,357 @@ class Trainer():
             # self.image_metadata = [xr.open_dataset(f'{loader.filename}.nc') for loader in self.test_loaders]
         if config.save_batch_confusion:
             self.batch_confusion = np.zeros((config.n_epochs, len(self.train_loader), self.nclasses, self.nclasses))
-    
+
+    # def _countvec_losses_and_metrics(self, pred_num, count_targets):
+    #     """
+    #     Counting head helper.
+    #     pred_num:      (B, C, K+1) logits
+    #     count_targets: (B, C) ints in 0..K
+
+    #     Returns:
+    #     num_loss_scalar : scalar CE over all (b,c) [for backprop]
+    #     per_sample_ce   : (B,)   mean CE per sample (avg over classes)
+    #     per_class_loss  : (C,)   mean CE per class (avg over batch)
+    #     per_class_acc   : (C,)   mean accuracy per class
+    #     acc             : float  accuracy
+    #     pred_counts     : (B, C) argmax predictions in 0..K
+    #     """
+    #     # print(pred_num.shape)
+    #     # print(count_targets.shape)
+    #     #print("shape:", pred_num.shape)
+    #     B, C, K1 = pred_num.shape
+    #     logits_flat  = pred_num.view(B * C, K1)       # (B*C, K+1)
+    #     targets_flat = count_targets.view(-1)         # (B*C,)
+
+    #     # Unreduced CE per (b,c)
+    #     print("logits_flat_shape", logits_flat.shape)
+    #     print("targets_flat_shape", targets_flat.shape)
+    #     print("logits_flat", targets_flat[:10])
+    #     print("targets_flat", logits_flat[:10])
+    #     ce_nc = self.criterion_count_ce_noreduce(logits_flat, targets_flat)  # (B*C,)
+
+    #     # Derive everything from ce_nc
+    #     per_sample_ce  = ce_nc.view(B, C).mean(dim=1)  # (B,)
+    #     per_class_loss = ce_nc.view(B, C).mean(dim=0)  # (C,)
+    #     num_loss_scalar = ce_nc.mean()                 # scalar
+
+    #     # Predictions & accuracies
+    #     with torch.no_grad():
+    #         pred_counts   = pred_num.argmax(dim=-1)           # (B, C)
+    #         correct_mat   = (pred_counts == count_targets)    # (B, C)
+
+    #         per_class_acc = correct_mat.float().mean(dim=0)   # (C,)
+    #         # acc_macro     = per_class_acc.mean().item()
+    #         # acc_micro     = correct_mat.float().mean().item()
+    #         strict_correct = correct_mat.all(dim=1)            # (B,)
+    #         acc      = strict_correct.float().mean().item()
+
+    #     return (num_loss_scalar, per_sample_ce, per_class_loss, per_class_acc,
+    #             acc, pred_counts)
+
+    def _countvec_losses_and_metrics(self, pred_num, count_targets):
+        B, C, K1 = pred_num.shape  # K1 = K+1 counts
+        losses = []
+        per_class_loss = []
+
+        for c in range(C):
+            logits_c = pred_num[:, c, :]          # [B, K+1]
+            targets_c = count_targets[:, c]       # [B]
+            ce_c = self.criterion_count_ce_noreduce(logits_c, targets_c)  # [B]
+            losses.append(ce_c)
+            per_class_loss.append(ce_c.mean())
+
+        ce_nc = torch.stack(losses)               # [C, B]
+        ce_nc = ce_nc.transpose(0, 1).reshape(-1) # (B*C,)
+        num_loss_scalar = ce_nc.mean()
+
+        per_sample_ce  = ce_nc.view(B, C).mean(dim=1)  # (B,)
+        per_class_loss = ce_nc.view(B, C).mean(dim=0)  # (C,)
+
+        with torch.no_grad():
+            pred_counts   = pred_num.argmax(dim=-1)      # (B, C)
+            correct_mat   = pred_counts.eq(count_targets)
+            per_class_acc = correct_mat.float().mean(dim=0)  # (C,)
+            strict_correct = correct_mat.all(dim=1)           # (B,)
+            acc = strict_correct.float().mean().item()
+
+        return (num_loss_scalar, per_sample_ce, per_class_loss,
+                per_class_acc, acc, pred_counts)
+
+
     def train_network(self):
+        config = self.config
+        device = config.device
+        n_epochs = config.n_epochs
+        base_name = getattr(config, "base_name", "run")
+
+        counting = (getattr(config, 'head', 'relational') == 'counting')
+        print("mead mode:", counting)
+
+        # ------------------------------
+        # Allocate training arrays
+        # ------------------------------
+        train_loss = np.zeros((n_epochs + 1,))
+        train_acc_map = np.zeros((n_epochs + 1,))  # map F1 or -1 if unused
+
+        train_count_num_loss = np.zeros((n_epochs + 1,))
+        train_dist_num_loss  = np.zeros((n_epochs + 1,))  # unused here
+        train_all_num_loss   = np.zeros((n_epochs + 1,))  # unused here
+
+        train_count_map_loss = np.zeros((n_epochs + 1,))  # unused here
+        train_dist_map_loss  = np.zeros((n_epochs + 1,))  # unused here
+        train_full_map_loss  = np.zeros((n_epochs + 1,))  # unused here
+
+        train_sh_loss = np.zeros((n_epochs + 1,))
+
+        train_acc_count = np.zeros((n_epochs + 1,))  
+        train_acc_dist  = np.zeros((n_epochs + 1,))  # unused here
+        train_acc_all   = np.zeros((n_epochs + 1,))  # unused here
+
+        # ------------------------------
+        # Allocate test arrays 
+        # ------------------------------
+        n_test_sets = len(self.test_loaders)
+
+        test_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+
+        test_count_map_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+        test_dist_map_loss  = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+        test_full_map_loss  = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+
+        test_count_num_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+        test_dist_num_loss  = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+        test_all_num_loss   = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+
+        test_sh_loss  = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+        test_acc_count = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+        test_acc_map   = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+        test_acc_dist  = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+        test_acc_all   = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+
+        test_results = pd.DataFrame()
+        confs = [[None for _ in self.test_loaders] for _ in range(n_epochs + 1)]
+
+        # ===========================
+        # ===== BEFORE TRAINING =====
+        # ===========================
+        if counting:
+            print("COUNTING HEAD")
+            ep_tr_loss, tr_num_loss, tr_acc, _, tr_map_loss, tr_df, _, tr_map_f1, tr_percls_acc, tr_percls_loss = \
+                self.test(self.train_loader, 0)
+
+            train_loss[0]           = ep_tr_loss
+            train_count_num_loss[0] = tr_num_loss
+            train_acc_count[0]      = tr_acc  
+            train_acc_map[0]        = -1
+            train_sh_loss[0]        = -1
+            train_count_map_loss[0] = -1
+            train_full_map_loss[0]  = -1
+            train_dist_map_loss[0]  = -1
+
+            for ts, test_loader in enumerate(self.test_loaders):
+                te_loss, te_num_loss, te_acc, _, te_map_loss, epoch_df, conf, te_map_f1, te_percls_acc, te_percls_loss = \
+                    self.test(test_loader, 0)
+                
+                epoch_df['train shapes'] = str(getattr(config, 'train_shapes', ''))
+                epoch_df['test shapes']  = str(getattr(test_loader, 'shapes', ''))
+                epoch_df['test lums']    = str(getattr(test_loader, 'lums', ''))
+                epoch_df['testset']      = getattr(test_loader, 'testset', '')
+                epoch_df['viewing']      = getattr(test_loader, 'viewing', '')
+                epoch_df['repetition']   = getattr(config, 'rep', None)
+                test_results = pd.concat((test_results, epoch_df), ignore_index=True)
+
+
+
+                test_loss[ts][0]           = te_loss
+                test_count_num_loss[ts][0] = te_num_loss
+                test_acc_count[ts][0]      = te_acc
+                test_acc_map[ts][0]        = -1
+                test_sh_loss[ts][0]        = -1
+                test_count_map_loss[ts][0] = -1
+                test_full_map_loss[ts][0]  = -1
+                test_dist_map_loss[ts][0]  = -1
+                confs[0][ts] = conf
+
+            print(f'Before Training [COUNTING]: Train Loss={train_count_num_loss[0]:.4f}  Accuracy={train_acc_count[0]:.2f}%')
+            print(f'Test OOD (Pairs/Lum/Both) Loss='
+                f'{test_count_num_loss[1][0]:.4f}/{test_count_num_loss[2][0]:.4f}/{test_count_num_loss[3][0]:.4f} '
+                f' Accuracy='
+                f'{test_acc_count[1][0]:.2f}%/{test_acc_count[2][0]:.2f}%/{test_acc_count[3][0]:.2f}%')
+            
+            if config.save_act:
+                print('Saving untrained activations...')
+                self.save_activations(self.model, self.test_loaders, base_name + '_init', config)
+
+        else:
+            # Original relational path: evaluate TRAIN and all TEST sets
+            ep_tr_loss, ep_tr_num_loss, tr_accuracy, ep_tr_sh_loss, ep_tr_map_loss, _, _, tr_map_acc = self.test(self.train_loader, 0)
+
+            train_loss[0]           = ep_tr_loss
+            train_count_num_loss[0] = ep_tr_num_loss
+            train_acc_count[0]      = tr_accuracy
+            train_sh_loss[0]        = ep_tr_sh_loss
+            # unpack map tuple to count/full (keep same names you had)
+            train_count_map_loss[0], train_full_map_loss[0] = ep_tr_map_loss
+            train_acc_map[0] = tr_map_acc
+
+            for ts, test_loader in enumerate(self.test_loaders):
+                epoch_te_loss, epoch_te_num_loss, te_accuracy, epoch_te_sh_loss, epoch_te_map_loss, epoch_df, conf, te_map_acc = \
+                    self.test(test_loader, 0)
+                
+                epoch_df['train shapes'] = str(getattr(config, 'train_shapes', ''))
+                epoch_df['test shapes']  = str(getattr(test_loader, 'shapes', ''))
+                epoch_df['test lums']    = str(getattr(test_loader, 'lums', ''))
+                epoch_df['testset']      = getattr(test_loader, 'testset', '')
+                epoch_df['viewing']      = getattr(test_loader, 'viewing', '')
+                epoch_df['repetition']   = getattr(config, 'rep', None)
+
+                test_results = pd.concat((test_results, epoch_df), ignore_index=True)
+
+                test_loss[ts][0]           = epoch_te_loss
+                test_count_num_loss[ts][0] = epoch_te_num_loss
+                test_acc_count[ts][0]      = te_accuracy
+                test_sh_loss[ts][0]        = epoch_te_sh_loss
+                test_count_map_loss[ts][0], test_full_map_loss[ts][0] = epoch_te_map_loss
+                test_acc_map[ts][0]        = te_map_acc
+                confs[0][ts] = conf
+
+            print(f'Test OOD (Shape/Lum/Both) Loss='
+                f'{test_count_num_loss[1][0]:.4f}/{test_count_num_loss[2][0]:.4f}/{test_count_num_loss[3][0]:.4f} '
+                f' Accuracy='
+                f'{test_acc_count[1][0]:.2f}%/{test_acc_count[2][0]:.2f}%/{test_acc_count[3][0]:.2f}%')
+
+        # ======================
+        # ===== TRAIN LOOP =====
+        # ======================
+        for ep in range(1, n_epochs + 1):
+            if counting:
+                ep_tr_loss, tr_num_loss, tr_acc, _, tr_map_loss, tr_map_f1, percls_acc, percls_loss = self.train(self.train_loader, ep)
+
+                train_loss[ep]           = ep_tr_loss
+                train_count_num_loss[ep] = tr_num_loss
+                train_acc_count[ep]      = tr_acc
+                train_acc_map[ep]        = -1
+                train_sh_loss[ep]        = -1
+                train_count_map_loss[ep] = -1
+                train_full_map_loss[ep]  = -1
+                train_dist_map_loss[ep]  = -1
+
+                # Evaluate all TEST sets
+                for ts, test_loader in enumerate(self.test_loaders):
+                    te_loss, te_num_loss, te_acc, _, te_map_loss, epoch_df, conf, te_map_f1, te_percls_acc, te_percls_loss = \
+                        self.test(test_loader, ep)
+
+                    epoch_df['train shapes'] = str(getattr(config, 'train_shapes', ''))
+                    epoch_df['pair group'] = str(getattr(config, 'pair_group', ''))
+                    epoch_df['test shapes']  = str(getattr(test_loader, 'shapes', ''))
+                    epoch_df['test lums']    = str(getattr(test_loader, 'lums', ''))
+                    epoch_df['testset']      = getattr(test_loader, 'testset', '')
+                    epoch_df['viewing']      = getattr(test_loader, 'viewing', '')
+                    epoch_df['repetition']   = getattr(config, 'rep', None)
+                    test_results = pd.concat((test_results, epoch_df), ignore_index=True)
+
+                    # test_loss[ts][ep]           = te_loss
+                    # test_count_num_loss[ts][ep] = te_num_loss
+                    # test_acc_count[ts][ep]      = te_micro_acc
+                    # test_acc_map[ts][ep]        = -1
+                    # test_sh_loss[ts][ep]        = -1
+                    # test_count_map_loss[ts][ep] = -1
+                    # test_full_map_loss[ts][ep]  = -1
+                    # test_dist_map_loss[ts][ep]  = -1
+                    # confs[ep][ts] = conf
+
+                    test_count_num_loss[ts][ep] = te_num_loss
+                    test_acc_count[ts][ep]      = te_acc
+                    test_acc_map[ts][ep]        = -1
+                    test_count_map_loss[ts][ep] = -1
+                    test_full_map_loss[ts][ep]  = -1
+                    test_loss[ts][ep]           = te_loss
+                    test_sh_loss[ts][ep]        = -1
+                    confs[ep][ts] = conf
+
+                # if (ep % 10 == 0) or ep == 1 or ep == n_epochs:
+                #     print(f'Epoch {ep} [COUNTING] Train loss={train_loss[ep]:.4f} | CE={train_count_num_loss[ep]:.4f} | micro acc={train_acc_count[ep]:.2f}%')
+
+                print(f'Epoch {ep}. LR={self.optimizer.param_groups[0]["lr"]:.4}')
+                print(f'Train Loss={train_loss[ep]:.4f}  Accuracy={train_acc_count[ep]:.2f}%')
+                print(f'Test Val Loss={test_count_num_loss[0][ep]:.4f}  Accuracy={test_acc_count[0][ep]:.2f}%')
+                print(f'Test OOD (Pairs/Lum/Both) Loss='
+                    f'{test_count_num_loss[1][ep]:.4f}/{test_count_num_loss[2][ep]:.4f}/{test_count_num_loss[3][ep]:.4f} '
+                    f' Accuracy='
+                    f'{test_acc_count[1][ep]:.2f}%/{test_acc_count[2][ep]:.2f}%/{test_acc_count[3][ep]:.2f}%')
+
+            else:
+                # Original relational path
+                ep_tr_loss, ep_tr_num_loss, tr_accuracy, ep_tr_sh_loss, ep_tr_map_loss, map_acc = self.train(self.train_loader, ep)
+
+                train_loss[ep]           = ep_tr_loss
+                train_count_num_loss[ep] = ep_tr_num_loss
+                train_acc_count[ep]      = tr_accuracy
+                train_sh_loss[ep]        = ep_tr_sh_loss
+                train_count_map_loss[ep], train_full_map_loss[ep] = ep_tr_map_loss
+                train_acc_map[ep]        = map_acc
+
+                for ts, test_loader in enumerate(self.test_loaders):
+                    epoch_te_loss, epoch_te_num_loss, te_accuracy, epoch_te_sh_loss, epoch_te_map_loss, epoch_df, conf, te_map_acc = \
+                        self.test(test_loader, ep)
+                    
+                    epoch_df['train shapes'] = str(getattr(config, 'train_shapes', ''))
+                    epoch_df['pair group'] = str(getattr(config, 'pair_group', ''))
+                    epoch_df['test shapes']  = str(getattr(test_loader, 'shapes', ''))
+                    epoch_df['test lums']    = str(getattr(test_loader, 'lums', ''))
+                    epoch_df['testset']      = getattr(test_loader, 'testset', '')
+                    epoch_df['viewing']      = getattr(test_loader, 'viewing', '')
+                    epoch_df['repetition']   = getattr(config, 'rep', None)
+                    test_results = pd.concat((test_results, epoch_df), ignore_index=True)
+
+                    test_loss[ts][ep]           = epoch_te_loss
+                    test_count_num_loss[ts][ep] = epoch_te_num_loss
+                    test_acc_count[ts][ep]      = te_accuracy
+                    test_sh_loss[ts][ep]        = epoch_te_sh_loss
+                    test_count_map_loss[ts][ep], test_full_map_loss[ts][ep] = epoch_te_map_loss
+                    test_acc_map[ts][ep]        = te_map_acc
+                    confs[ep][ts] = conf
+
+                if not ep % 10 or ep == n_epochs - 1 or ep == 1:
+                    print(f'Epoch {ep}. LR={self.optimizer.param_groups[0]["lr"]:.4}')
+                    print(f'Train Loss={train_loss[ep]:.4f}  Accuracy={train_acc_count[ep]:.2f}%  Map F1={train_acc_map[ep]:.2f}')
+
+                    print(f'Test Val Loss={test_count_num_loss[0][ep]:.4f}  Accuracy={test_acc_count[0][ep]:.2f}%')
+                    if len(self.test_loaders) >= 4:
+                        print(f'Test OOD (Shape/Lum/Both) Loss='
+                            f'{test_count_num_loss[1][ep]:.4f}/{test_count_num_loss[2][ep]:.4f}/{test_count_num_loss[3][ep]:.4f} '
+                            f' Accuracy='
+                            f'{test_acc_count[1][ep]:.2f}%/{test_acc_count[2][ep]:.2f}%/{test_acc_count[3][ep]:.2f}%')
+                    if config.use_loss != 'num':
+                        print(f'Test Val Map Loss={test_count_map_loss[0][ep]:.4f}')
+
+        # Save network activations
+        if config.save_act:
+            print('Saving activations...')
+            self.save_activations(self.model, self.test_loaders, base_name + '_trained', config)
+
+        # ==========================
+        # ===== Pack & return  =====
+        # ==========================
+        train_num_losses = (train_count_num_loss, train_dist_num_loss, train_all_num_loss)
+        train_map_losses = (train_count_map_loss, train_dist_map_loss, train_full_map_loss)
+        train_losses     = (train_num_losses, train_map_losses, train_sh_loss)
+        train_accs       = (train_acc_count, train_acc_dist, train_acc_all, train_acc_map)
+
+        test_num_losses = (test_count_num_loss, test_dist_num_loss, test_all_num_loss)
+        test_map_losses = (test_count_map_loss, test_dist_map_loss, test_full_map_loss)
+        test_losses     = (test_num_losses, test_map_losses, test_sh_loss)
+        test_accs       = (test_acc_count, test_acc_map, test_acc_dist, test_acc_all)
+
+        res_tr  = [train_losses, train_accs]
+        res_te  = [test_losses, test_accs, confs, test_results]
+        results_list = res_tr + res_te
+        return self.model, results_list
+
+
+
+    def train_network_old(self):
         config = self.config
         base_name = config.base_name
         device = config.device
@@ -302,9 +658,157 @@ class Trainer():
         res_te = [test_losses, test_accs,  confs, test_results]
         results_list = res_tr + res_te
         return self.model, results_list
-
+    
     @torch.no_grad()
     def test(self, loader, ep):
+        self.model.eval()
+        config = self.config
+        device = config.device
+        counting = (getattr(config, 'head', 'relational') == 'counting')
+
+        test_results = pd.DataFrame()
+        epoch_loss = 0.0
+
+        # Relational accumulators
+        n_correct = 0
+        f1_sum = 0.0
+        count_map_epoch_loss = 0.0
+
+        # Counting accumulators
+        strict_correct_sum = 0  
+        if counting:
+            print("COUNTING HEAD")
+            C = self.n_shapes
+            percls_acc_sum  = torch.zeros(C, dtype=torch.float32)
+            percls_loss_sum = torch.zeros(C, dtype=torch.float32)
+            acc_sum = 0.0
+            n_batches = 0
+
+        for i, batch in enumerate(loader):
+            (ind, input, target, num_dist, all_loc, shape_label, pass_count, *extra) = batch
+            input = input.to(device)
+            all_loc = all_loc.to(device)
+
+            # forward all glimpses, use last-step outputs (as before)
+            hidden = self.model.initHidden(input.shape[0]).to(device)
+            n_glimpses = input.shape[1]
+            for t in range(n_glimpses):
+                pred_num, pred_shape, hidden, _= self.model(input[:, t, :], hidden)
+                
+
+            if counting:
+                count_targets = target.to(device)  # (B, C) ints in 0..K, from loader
+                (num_loss_scalar, per_sample_ce, per_class_loss, per_class_acc,
+                acc, pred_counts) = self._countvec_losses_and_metrics(pred_num, count_targets)
+
+                # per-slot errors
+                abs_err = (pred_counts - count_targets).abs()
+
+                strict_right = (abs_err == 0).all(dim=1)         # every slot exactly right
+                off_by_one    = (abs_err <= 1).all(dim=1)        # every slot within ±1
+                off_by_more   = (abs_err > 1).any(dim=1)         # at least one slot off by >1
+
+                strict_rate          = strict_right.float().mean().item() * 100
+                strict_off_by_one    = off_by_one.float().mean().item() * 100
+                strict_off_gt_one    = off_by_more.float().mean().item() * 100  
+
+                print(f"Right: {strict_rate} %")
+                print(f"Off-by-one: {strict_off_by_one} %")
+                print(f"Off-by-more-than-one: {strict_off_gt_one} %")
+
+                # if i == 0 and ep % 5 == 0:             # e.g., once every 5 epochs
+                #     for j in range(min(10, count_targets.size(0))):
+                #         tgt = count_targets[j].tolist()
+                #         pred = pred_counts[j].tolist()
+                #         diff = (pred_counts[j] - count_targets[j]).tolist()
+                #         print(f"[sample {j}] tgt={tgt} pred={pred} diff={diff}")
+
+
+                # epoch scalars
+                epoch_loss += float(num_loss_scalar.item())
+                percls_acc_sum  += per_class_acc.cpu()
+                percls_loss_sum += per_class_loss.cpu()
+                acc_sum   += acc
+                n_batches += 1
+
+                # strict per-sample correctness (exact count vector match)
+                strict_correct = (pred_counts == count_targets).all(dim=1).cpu().numpy()  # (B,)
+                strict_correct_sum += strict_correct.sum()
+
+                # ---- batch_results ----
+                batch_results = pd.DataFrame()
+                #batch_results['pass count']      = pass_count.detach().cpu().numpy()
+                batch_results['correct']         = strict_correct.astype(bool)
+                batch_results['predicted']       = -1     # keep column for compatibility
+                batch_results['true']            = -1
+                batch_results['loss']            = per_sample_ce.detach().cpu().numpy()   # per-sample CE
+                batch_results['full map loss']   = -1
+                batch_results['count map loss']  = -1
+                batch_results['num loss']        = per_sample_ce.detach().cpu().numpy()
+                batch_results['shape loss']      = -1
+                batch_results['epoch']           = ep
+                batch_results['pred_counts']     = pred_counts.detach().cpu().tolist()
+                batch_results['true_counts']     = count_targets.detach().cpu().tolist()
+
+                test_results = pd.concat((test_results, batch_results), ignore_index=True)
+
+            else:
+                # ===== RELATIONAL HEAD =====
+                losses, pred = self.get_losses(
+                    pred_num,
+                    target.to(device),
+                    _, # map_
+                    all_loc,
+                    ep,
+                    noreduce=True
+                )
+                loss, num_loss, map_loss, map_loss_to_add = losses
+
+                batch_results = pd.DataFrame()
+                correct = pred.eq(target.view_as(pred))
+                batch_results['pass count']      = pass_count.detach().cpu().numpy()
+                batch_results['correct']         = correct.cpu().numpy()
+                batch_results['predicted']       = pred.detach().cpu().numpy()
+                batch_results['true']            = target.detach().cpu().numpy()
+                batch_results['loss']            = loss.detach().cpu().numpy()
+                try:
+                    batch_results['full map loss'] = map_loss.detach().cpu().numpy()
+                except:
+                    batch_results['full map loss'] = np.ones(loss.shape) * -1
+                batch_results['num loss']        = num_loss.detach().cpu().numpy()
+                batch_results['shape loss']      = -1
+                batch_results['epoch']           = ep
+                test_results = pd.concat((test_results, batch_results), ignore_index=True)
+
+                epoch_loss += loss.mean().item()
+                n_correct  += correct.sum().item()
+                if map_loss is not None:
+                    count_map_epoch_loss += map_loss.mean().item()
+                    f1_sum += get_f1(_, all_loc, config.task_type) # map_
+
+        # ---- finalize epoch metrics ----
+        if counting:
+            epoch_loss  /= max(1, n_batches)
+            percls_acc   = (percls_acc_sum  / max(1, n_batches)).numpy()
+            percls_loss  = (percls_loss_sum / max(1, n_batches)).numpy()
+            acc    = 100.0 * (acc_sum / max(1, n_batches))
+            strict_acc   = 100.0 * (strict_correct_sum / len(loader.dataset))
+            map_epoch_loss = (-1, -1)
+            map_f1 = -1
+            # Return shape mirrors the relational path where possible:
+            # (epoch_loss, num_epoch_loss, accuracy, shape_epoch_loss, map_epoch_loss, test_results, conf, map_f1)
+            return (epoch_loss, epoch_loss, strict_acc, -1, map_epoch_loss, test_results, None, map_f1,
+                    percls_acc, percls_loss)
+
+        else:
+            accuracy = 100. * (n_correct / len(loader.dataset))
+            map_f1 = 100. * (f1_sum / len(loader)) if (self.config.use_loss != 'num') else -1
+            map_epoch_loss = (count_map_epoch_loss / len(loader), -1) if (self.config.use_loss != 'num') else (-1, -1)
+            return (epoch_loss / len(loader), num_loss.mean().item(), accuracy, -1,
+                    map_epoch_loss, test_results, None, map_f1)
+
+    @torch.no_grad()
+    def test_old(self, loader, ep):
         noreduce = True
         self.model.eval()
         config = self.config
@@ -415,8 +919,96 @@ class Trainer():
         shape_epoch_loss /= len(loader) #* n_glimpses
         return (epoch_loss, num_epoch_loss, accuracy, shape_epoch_loss,
                 map_epoch_loss, test_results, confusion_matrix, map_f1)
-    
+
     def train(self, loader, ep):
+        self.model.train()
+        noreduce = False
+        config = self.config
+
+        counting = (getattr(config, 'head', 'relational') == 'counting')
+
+        epoch_loss = 0.0
+        correct_num = 0        # for relational
+        map_f1_sum = 0.0       # for relational
+        map_epoch_loss = 0.0   # for relational
+        
+
+        if counting:
+            C = self.n_shapes
+            percls_acc_sum  = torch.zeros(C, dtype=torch.float32)
+            percls_loss_sum = torch.zeros(C, dtype=torch.float32)
+            acc_sum = 0.0
+            n_batches = 0
+
+        for i, batch in enumerate(loader):
+            (ind, input, target, num_dist, locations, shape_label, pass_count, *extra) = batch
+            input = input.to(config.device)
+            locations = locations.to(config.device)
+            if isinstance(shape_label, torch.Tensor):
+                shape_label = shape_label.to(config.device)
+
+            if self.shuffle:
+                # Shuffle glimpse order on each batch
+                seq_len = input.shape[1]
+                perm = torch.randperm(seq_len, device=input.device)
+                input = input[:, perm, :]
+                shape_label = shape_label[:, perm, :] # need to  shuffle the shape label to match 
+
+            input_dim = input.shape[0]
+            self.model.zero_grad()
+            hidden = self.model.initHidden(input_dim).to(config.device)
+
+            n_glimpses = input.shape[1]
+            for t in range(n_glimpses):
+                pred_num, pred_shape, hidden, _ = self.model(input[:, t, :], hidden) # pred_num has shape (B, n_shapes, K+1) (logits).
+                
+            if counting:
+                count_targets = target.to(config.device)  # shape (B, n_shapes), values in 0..K
+                (num_loss_scalar, per_sample_ce, per_class_loss, per_class_acc,
+                acc, pred_counts) = self._countvec_losses_and_metrics(pred_num, count_targets)
+
+                loss = num_loss_scalar                    
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.model.parameters(), 2)
+                self.optimizer.step()
+
+                epoch_loss += loss.item()
+                percls_acc_sum  += per_class_loss.detach().cpu()
+                percls_loss_sum += per_class_loss.detach().cpu()
+                acc_sum += acc
+                n_batches += 1
+
+            else:
+                losses, pred = self.get_losses(pred_num, target.to(config.device), map_, locations, ep, noreduce)
+                loss, num_loss, map_loss, map_loss_to_add = losses
+
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.model.parameters(), 2)
+                self.optimizer.step()
+
+                epoch_loss += loss.item()
+                correct_num += pred.eq(target.view_as(pred)).sum().item()
+
+                if map_loss is not None:
+                    map_epoch_loss += map_loss.item()
+                    map_f1_sum += get_f1(map_, locations, config.task_type)
+
+        if counting:
+            epoch_loss /= max(1, n_batches)
+            percls_acc  = (percls_acc_sum / max(1, n_batches)).numpy()
+            percls_loss = (percls_loss_sum / max(1, n_batches)).numpy()
+            acc = 100.0 * (acc_sum / max(1, n_batches))
+            map_epoch_loss = (-1, -1)
+            map_f1 = -1
+            return epoch_loss, float(num_loss_scalar.detach().cpu().item()), acc, -1, map_epoch_loss, map_f1, percls_acc, percls_loss
+        else:
+            accuracy = 100. * (correct_num / len(loader.dataset))
+            map_f1 = 100. * (map_f1_sum / len(loader)) if (self.config.use_loss != 'num') else -1
+            map_epoch_loss = (map_epoch_loss / len(loader), -1) if (self.config.use_loss != 'num') else (-1, -1)
+            return epoch_loss / len(loader), num_loss.item(), accuracy, -1, map_epoch_loss, map_f1
+
+    
+    def train_old(self, loader, ep):
         self.model.train()
         noreduce = False
         config = self.config
@@ -480,7 +1072,7 @@ class Trainer():
             self.optimizer.step()
 
             correct += pred.eq(target.view_as(pred)).sum().item()
-            f1_sum += get_f1(map, locations, self.task_type)
+            f1_sum += get_f1(map, locations, config.task_type)
             epoch_loss += loss.item()
             num_epoch_loss += num_loss.item()
             # if not isinstance(map_loss_to_add, int):
@@ -935,7 +1527,7 @@ class Trainer():
             map_loss = self.criterion_bce_full(map, locations)
             map_loss_to_add = map_loss.item()
         return map_loss, map_loss_to_add
-      
+    
     def get_losses(self, pred_num, target, map, locations, ep, noreduce):
         # Calculate number classification loss
         if noreduce:

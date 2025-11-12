@@ -42,7 +42,9 @@ def choose_model(config, model_dir):
                 'n_glimpses': config.n_glimpses, 'xy_sz':xy_sz, 'mult':config.mult, 
                 'pass_penult':config.pass_penult, 'sigmoid':sigmoid,
                 'task_type': getattr(config, 'task_type', 'count'),
-                'map_classes': getattr(config, 'map_shape_count', None)}
+                'map_classes': getattr(config, 'map_shape_count', None),
+                'head': config.head, 'min_num': config.min_num, 'max_num': config.max_num
+                }
     if 'par' in model_type:# == 'rnn_classifier_par':
         # Model with two parallel streams at the level of the map. Only one
         # stream is optimized to match the map. The other of the same size
@@ -55,6 +57,7 @@ def choose_model(config, model_dir):
     train_on = mod_args['train_on']
     grid = mod_args['grid']
     n_shapes = mod_args['n_shapes']
+    head = mod_args['head']
     # grid_to_im_shape = {3:[27, 24], 6:[48, 42], 9:[69, 60]}
     # height, width = grid_to_im_shape[grid]
     map_size = grid**2
@@ -258,12 +261,17 @@ class RNNClassifier2stream(nn.Module):
     """Main dual-stream network. 
     
     Used for simple counting as is and as part of PretrainVentral for the
-    distractor task."""
+    distractor task.
+    Final "number head" produces logits depending on `head`:
+        - head='relational' : logits over relational classes (e.g., min/max label space)
+        - head='counting'   : per-shape logits over counts 0..K (multi-task classification)
+    
+    """
     def __init__(self, pix_size, hidden_size, map_size, output_size, **kwargs):
         super().__init__()
         self.train_on = kwargs['train_on']
         self.output_size = output_size
-        self.n_shapes = kwargs['n_shapes'] if 'n_shapes' in kwargs.keys() else 20
+        self.n_shapes = kwargs['n_shapes'] if 'n_shapes' in kwargs.keys() else 9
         self.act = kwargs['act'] if 'act' in kwargs.keys() else None
         self.detach = kwargs['detach'] if 'detach' in kwargs.keys() else False
         drop = kwargs['dropout'] if 'dropout' in kwargs.keys() else 0
@@ -275,7 +283,17 @@ class RNNClassifier2stream(nn.Module):
         self.task_type = kwargs['task_type'] if 'task_type' in kwargs.keys() else 'count'
         self.n_classes = kwargs['n_classes'] if 'n_classes' in kwargs.keys() else output_size
         self.map_classes = kwargs['map_classes'] if 'map_classes' in kwargs.keys() else None
+        self.min_num = kwargs['min_num'] if 'min_num' in kwargs.keys() else None
+        self.max_num = kwargs['max_num'] if 'max_num' in kwargs.keys() else None
         self.map_size = map_size
+
+        # ----- Head selection + K (max count) for counting -----
+        self.head = kwargs['head'] if 'head' in kwargs.keys() else None         # 'relational' | 'counting'
+        self.count_K = self.max_num                                             # expected max count K
+        if self.head == 'counting':
+            self.n_shapes=9
+            self.output_size = int(self.count_K) + 1
+            print(self.output_size)
 
         if self.mult:
             embedding_size = 64
@@ -297,11 +315,32 @@ class RNNClassifier2stream(nn.Module):
         self.drop_layer = nn.Dropout(p=drop)
 
         self.map_readout = nn.Linear(hidden_size, map_size)
+
+        # if self.par:
+        #     self.notmap = nn.Linear(hidden_size, map_size)
+        #     self.num_readout = nn.Linear(map_size * 2, output_size, bias=False)
+        # else:
+        #     self.num_readout = nn.Linear(map_size, output_size, bias=False)
+
+        #Penultimate (what feeds number head)
+
+        penult_dim = map_size * (2 if self.par else 1)
         if self.par:
             self.notmap = nn.Linear(hidden_size, map_size)
-            self.num_readout = nn.Linear(map_size * 2, output_size, bias=False)
+
+        # === Number head(s) ===
+        if self.head == 'relational':
+            # same as before: logits over min/max classes
+            self.num_readout = nn.Linear(penult_dim, self.n_classes, bias=False)
+        elif self.head == 'counting':
+            # logits over counts 0..K for each of n_shapes → total units n_shapes*(K+1)
+            #print("n_shapes",self.n_shapes)
+            #print("count_K",self.count_K)
+            out_units = self.n_shapes * (int(self.count_K) + 1)
+            #print(out_units)
+            self.num_readout = nn.Linear(penult_dim, out_units, bias=False)
         else:
-            self.num_readout = nn.Linear(map_size, output_size, bias=False)
+            raise ValueError(f"Unknown head: {self.head}")
 
         self.initHidden = self.rnn.initHidden
         self.sigmoid = nn.Sigmoid()
@@ -309,6 +348,7 @@ class RNNClassifier2stream(nn.Module):
 
 
     def forward(self, x, hidden):
+        # ----- Stream selection & fusion -----
         if self.train_on == 'both':
             xy = x[:, :self.xy_size]  # xy coords are first two input features typically unless place code
             pix = x[:, self.xy_size:]
@@ -328,11 +368,13 @@ class RNNClassifier2stream(nn.Module):
             pix = x
             pix = self.LReLU(self.pix_embedding(pix))
             combined = pix
-            
+
+        # ----- Joint projection → RNN → dropout -----
         x = self.LReLU(self.joint_embedding(combined))
         x, hidden = self.rnn(x, hidden)
         x = self.drop_layer(x)
 
+        # Map path
         map_ = self.map_readout(x)
         # If not including the map loss term in the optimized objective function, this sigmoid is unncessary and 
         # contributes to vanishing gradients. Therefore, when use_loss == num, replace with LReLu.
@@ -354,5 +396,19 @@ class RNNClassifier2stream(nn.Module):
             penult = torch.cat((map_to_pass_on, notmap), dim=1)
         else:
             penult = map_to_pass_on
-        num = self.num_readout(penult)
-        return num, pix, map_, hidden, x, penult
+
+        # Number head forward
+        num_logits_flat = self.num_readout(penult)  # (B, out_units)
+
+        if self.head == 'relational':
+            # (B, n_classes) — directly consumable by CrossEntropyLoss
+            num = num_logits_flat
+        else:
+            # Reshape long vector → (B, n_shapes, K+1) so each shape has its own (K+1)-way logits.
+            B = num_logits_flat.size(0)
+            K1 = int(self.count_K) + 1
+            num = num_logits_flat.view(B, self.n_shapes, K1)
+            
+            #print("num", num.shape)
+
+        return num, pix, hidden, x

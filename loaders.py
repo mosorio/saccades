@@ -112,10 +112,18 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
     # image_height = dataset.image_height
     half_idx = list(range(nex))  # for mixed datasets with half free half fixed
     random.shuffle(half_idx)
+
     ### NUMBER LABEL ###
-    if config.challenge in ['min', 'max']:  # relational enumeration tasks
-        num_field = 'numerosity_min' if config.challenge == 'min' else 'numerosity_max'
+    if config.task_type in ['min', 'max'] and config.head == 'relational':  # relational enumeration tasks
+        num_field = 'numerosity_min' if config.task_type == 'min' else 'numerosity_max'
         count_num = torch.tensor(dataset[num_field].values).long().to(config.device)
+        dist_num = torch.zeros_like(count_num).long().to(config.device)
+    elif config.task_type == 'count' and config.head == 'counting':
+        count_num = torch.tensor(dataset['shape_hist'].values[:,1:10]).long().to(config.device) #[:,1:config.max_num+2]
+        dist_num = torch.zeros_like(count_num).long().to(config.device)
+        # print("count_num", count_num[:10])
+    elif config.task_type == 'count':
+        count_num = torch.tensor(dataset['numerosity_target'].values).long().to(config.device)
         dist_num = torch.zeros_like(count_num).long().to(config.device)
     elif target_type == 'all':
         total_num = np.sum(dataset['locations'].values, axis=1)
@@ -137,14 +145,15 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
             count_num = torch.tensor(dataset['numerosity'].values).long().to(config.device)
             dist_num = torch.zeros_like(count_num).long().to(config.device)
     # Number labels should start at zero
-    if config.challenge in ['min', 'max']:
+    #if config.task_type in ['min', 'max']:
+    if config.head == 'relational' and config.task_type in ['min', 'max']:
         min_label = count_num.min()
         count_num = count_num - min_label
         print(f'Adjusted count_num labels to start at 0 by subtracting min label {min_label}. New range {count_num.min()}-{count_num.max()}')
         rel_classes = int(count_num.max().item() + 1)
         print(f'Number of relative classes: {rel_classes}')
         config.rel_output_size = rel_classes    # stash for model construction
-    else:
+    elif config.head == 'relational':
         count_num -= config.min_num
 
     ### INTEGRATION SCORE ###
@@ -178,8 +187,8 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
 
     ### MAP LABEL ###
     # true_loc = torch.tensor(dataset['locations']).float().to(config.device)
-    if config.challenge in ['min', 'max']:
-        loc_field = 'locations_class_min' if config.challenge == 'min' else 'locations_class_max'
+    if config.task_type in ['min', 'max']:
+        loc_field = 'locations_class_min' if config.task_type == 'min' else 'locations_class_max'
         # loc_field = 'locations_class_index'  # using index map instead of one hot class map
         locations_class = dataset[loc_field].values.astype(np.float32)
         count_loc = torch.tensor(locations_class).float().to(config.device)
