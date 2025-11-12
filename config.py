@@ -63,6 +63,8 @@ def get_config():
     # The above two params are replaced with one param --distinctive which can also represent graded levels of distinctiveness, but perhaps we leave the above two for backwards compatibility
     parser.add_argument('--distinctive', type=float, default=0, help='How distinctive should items within a single image be? 0 means all the same shape, 1 means as distinctive as possible, 0.3 and 0.6 in between.')
     parser.add_argument('--challenge', type=str, default='', help='Which images/task to train on. ignore012, ignore123, or "" for simple counting (no special challenge)')
+    parser.add_argument('--task_type', type=str, default='count')
+    parser.add_argument('--head', type=str, default='relational', choices=['relational', 'counting'])
     parser.add_argument('--no_solarize', action='store_true', default=False)
     parser.add_argument('--n_glimpses', type=int, default=None, help='How long is each glimpse sequence.')
     parser.add_argument('--policy', type=str, default='cheat+jitter', help='which saccadic policy to use. humanlike or cheat+jitter or cheat')
@@ -126,7 +128,7 @@ def get_config():
     config = parser.parse_args()
     # config.n_classes = len(config.train_shapes)
     config.solarize = False if config.no_solarize else True
-    config.task_type = 'min' if config.challenge == 'min' else 'count'
+    #config.task_type = 'min' if config.challenge == 'min' else 'count'
     config.map_classes = None
     if config.model_type == 'rnn_regression':
         config.cross_entropy = False
