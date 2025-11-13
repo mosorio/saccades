@@ -444,6 +444,8 @@ class Trainer():
                     test_sh_loss[ts][ep]        = epoch_te_sh_loss
                     test_count_map_loss[ts][ep], test_full_map_loss[ts][ep] = epoch_te_map_loss
                     test_acc_map[ts][ep]        = te_map_acc
+                    test_losses = (test_loss, test_count_num_loss, test_count_map_loss, test_sh_loss)
+                    test_accs = (test_acc_count, test_acc_map)
                     confs[ep][ts] = conf
 
                 if not ep % 10 or ep == n_epochs - 1 or ep==1:
@@ -479,10 +481,10 @@ class Trainer():
                     print(f'Test Diff Loss={test_count_num_loss[0][ep]:.4} \t Accuracy={test_acc_count[0][ep]:.3}%')
                     print(f'Test Same Loss={test_count_num_loss[1][ep]:.4} \t Accuracy={test_acc_count[1][ep]:.3}%')
 
-            # Save network activations
-            if config.save_act:
-                print('Saving activations...')
-                self.save_activations(self.model, self.test_loaders, base_name + '_trained', config)
+        # Save network activations
+        if config.save_act:
+            print('Saving activations...')
+            self.save_activations(self.model, self.test_loaders, base_name + '_trained', config)
 
 
         # ==========================
@@ -503,202 +505,202 @@ class Trainer():
         results_list = res_tr + res_te
         return self.model, results_list
 
-    def train_network_old(self):
-        config = self.config
-        base_name = config.base_name
-        device = config.device
-        avg_num_objects = config.max_num - ((config.max_num-config.min_num)/2)
-        n_locs = config.grid**2
-        weight_full = (n_locs - avg_num_objects)/ (avg_num_objects+2) # 9 for 9 locations
-        weight_count = (n_locs - avg_num_objects)/ avg_num_objects
-        pos_weight_count = torch.ones([n_locs], device=device) * weight_count
-        pos_weight_full = torch.ones([n_locs], device=device) * weight_full
-        self.criterion_bce_full = nn.BCEWithLogitsLoss(pos_weight=pos_weight_full)
-        self.criterion_bce_count = nn.BCEWithLogitsLoss(pos_weight=pos_weight_count)
-        self.criterion_bce_full_noreduce = nn.BCEWithLogitsLoss(pos_weight=pos_weight_full, reduction='none')
-        self.criterion_bce_count_noreduce = nn.BCEWithLogitsLoss(pos_weight=pos_weight_count, reduction='none')
+    # def train_network_old(self):
+    #     config = self.config
+    #     base_name = config.base_name
+    #     device = config.device
+    #     avg_num_objects = config.max_num - ((config.max_num-config.min_num)/2)
+    #     n_locs = config.grid**2
+    #     weight_full = (n_locs - avg_num_objects)/ (avg_num_objects+2) # 9 for 9 locations
+    #     weight_count = (n_locs - avg_num_objects)/ avg_num_objects
+    #     pos_weight_count = torch.ones([n_locs], device=device) * weight_count
+    #     pos_weight_full = torch.ones([n_locs], device=device) * weight_full
+    #     self.criterion_bce_full = nn.BCEWithLogitsLoss(pos_weight=pos_weight_full)
+    #     self.criterion_bce_count = nn.BCEWithLogitsLoss(pos_weight=pos_weight_count)
+    #     self.criterion_bce_full_noreduce = nn.BCEWithLogitsLoss(pos_weight=pos_weight_full, reduction='none')
+    #     self.criterion_bce_count_noreduce = nn.BCEWithLogitsLoss(pos_weight=pos_weight_count, reduction='none')
 
-        n_epochs = config.n_epochs
+    #     n_epochs = config.n_epochs
 
-        train_loss = np.zeros((n_epochs + 1,))
-        # train_map_loss = np.zeros((n_epochs,))
-        train_count_map_loss = np.zeros((n_epochs + 1,))
-        train_dist_map_loss = np.zeros((n_epochs + 1,))
-        train_full_map_loss = np.zeros((n_epochs + 1,))
-        train_count_num_loss = np.zeros((n_epochs + 1,))
-        train_dist_num_loss = np.zeros((n_epochs + 1,))
-        train_all_num_loss = np.zeros((n_epochs + 1,))
-        train_sh_loss = np.zeros((n_epochs + 1,))
-        train_acc_count = np.zeros((n_epochs + 1,))
-        train_acc_dist = np.zeros((n_epochs + 1,))
-        train_acc_all = np.zeros((n_epochs + 1,))
-        train_acc_map = np.zeros((n_epochs + 1,))
-        # n_test_sets = len(config.test_shapes) * len(config.lum_sets)
-        n_test_sets = len(self.test_loaders)
-        test_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
-        # test_map_loss = [np.zeros((n_epochs,)) for _ in range(n_test_sets)]
-        test_full_map_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
-        test_count_map_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
-        test_dist_map_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
-        test_count_num_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
-        test_dist_num_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
-        test_all_num_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
-        test_sh_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
-        test_acc_count = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
-        test_acc_map = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
-        test_acc_dist = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
-        test_acc_all = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
-        test_results = pd.DataFrame()
-        confs = [[None for _ in self.test_loaders] for _ in range(n_epochs + 1)]
+    #     train_loss = np.zeros((n_epochs + 1,))
+    #     # train_map_loss = np.zeros((n_epochs,))
+    #     train_count_map_loss = np.zeros((n_epochs + 1,))
+    #     train_dist_map_loss = np.zeros((n_epochs + 1,))
+    #     train_full_map_loss = np.zeros((n_epochs + 1,))
+    #     train_count_num_loss = np.zeros((n_epochs + 1,))
+    #     train_dist_num_loss = np.zeros((n_epochs + 1,))
+    #     train_all_num_loss = np.zeros((n_epochs + 1,))
+    #     train_sh_loss = np.zeros((n_epochs + 1,))
+    #     train_acc_count = np.zeros((n_epochs + 1,))
+    #     train_acc_dist = np.zeros((n_epochs + 1,))
+    #     train_acc_all = np.zeros((n_epochs + 1,))
+    #     train_acc_map = np.zeros((n_epochs + 1,))
+    #     # n_test_sets = len(config.test_shapes) * len(config.lum_sets)
+    #     n_test_sets = len(self.test_loaders)
+    #     test_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+    #     # test_map_loss = [np.zeros((n_epochs,)) for _ in range(n_test_sets)]
+    #     test_full_map_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+    #     test_count_map_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+    #     test_dist_map_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+    #     test_count_num_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+    #     test_dist_num_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+    #     test_all_num_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+    #     test_sh_loss = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+    #     test_acc_count = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+    #     test_acc_map = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+    #     test_acc_dist = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+    #     test_acc_all = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+    #     test_results = pd.DataFrame()
+    #     confs = [[None for _ in self.test_loaders] for _ in range(n_epochs + 1)]
 
-        ###### ASSESS PERFORMANCE BEFORE TRAINING #####
-        ep_tr_loss, ep_tr_num_loss, tr_accuracy, ep_tr_sh_loss, ep_tr_map_loss, _, _, tr_map_acc = self.test(self.train_loader, 0)
-        train_count_num_loss[0] = ep_tr_num_loss
-        train_acc_count[0] = tr_accuracy
-        train_acc_map[0] = tr_map_acc
-        train_count_map_loss[0], train_full_map_loss[0] = ep_tr_map_loss
-        train_loss[0] = ep_tr_loss  # optimized loss
-        train_sh_loss[0] = ep_tr_sh_loss
-        shape_lum = product(config.test_shapes, config.lum_sets)
-        # for ts, (test_loader, (test_shapes, lums)) in enumerate(zip(self.test_loaders, shape_lum)):
-        for ts, test_loader in enumerate(self.test_loaders):
-            epoch_te_loss, epoch_te_num_loss, te_accuracy, epoch_te_sh_loss, epoch_te_map_loss, epoch_df, conf, te_map_acc = self.test(test_loader, 0)
-            epoch_df['train shapes'] = str(config.train_shapes)
-            # epoch_df['test shapes'] = str(test_shapes)
-            # epoch_df['test lums'] = str(lums)
-            epoch_df['test shapes'] = str(test_loader.shapes)
-            epoch_df['test lums'] = str(test_loader.lums)
-            epoch_df['testset'] = test_loader.testset
-            epoch_df['viewing'] = test_loader.viewing
-            epoch_df['repetition'] = config.rep
-            test_results = pd.concat((test_results, epoch_df), ignore_index=True)
-            test_count_num_loss[ts][0] = epoch_te_num_loss
-            test_acc_count[ts][0] = te_accuracy
-            test_acc_map[ts][0] = te_map_acc
-            test_count_map_loss[ts][0], test_full_map_loss[ts][0] = epoch_te_map_loss
-            test_loss[ts][0] = epoch_te_loss
-            test_sh_loss[ts][0] = epoch_te_sh_loss
-            confs[0][ts] = conf
-        print(f'Before Training:')
-        print(f'Train (Count/Dist/All) Num Loss={train_count_num_loss[0]:.4}/{train_dist_num_loss[0]:.4}/{train_all_num_loss[0]:.4} \t Accuracy={train_acc_count[0]:.3}%/{train_acc_dist[0]:.3}%/{train_acc_all[0]:.3}')
-        print(f'Train (Count/Dist/All) Map Loss={train_count_map_loss[0]:.4}/{train_dist_map_loss[0]:.4}/{train_full_map_loss[0]:.4}')
-        print(f'Test (Count/Dist/All) Num Loss={test_count_num_loss[-1][0]:.4}/{test_dist_num_loss[-1][0]:.4}/{test_all_num_loss[-1][0]:.4} \t Accuracy={test_acc_count[-1][0]:.3}%/{test_acc_dist[-1][0]:.3}%/{test_acc_all[-1][0]:.3}')
-        print(f'Test (Count/Dist/All) Map Loss={test_count_map_loss[-1][0]:.4}/{test_dist_map_loss[-1][0]:.4}/{test_full_map_loss[-1][0]:.4}')
+    #     ###### ASSESS PERFORMANCE BEFORE TRAINING #####
+    #     ep_tr_loss, ep_tr_num_loss, tr_accuracy, ep_tr_sh_loss, ep_tr_map_loss, _, _, tr_map_acc = self.test(self.train_loader, 0)
+    #     train_count_num_loss[0] = ep_tr_num_loss
+    #     train_acc_count[0] = tr_accuracy
+    #     train_acc_map[0] = tr_map_acc
+    #     train_count_map_loss[0], train_full_map_loss[0] = ep_tr_map_loss
+    #     train_loss[0] = ep_tr_loss  # optimized loss
+    #     train_sh_loss[0] = ep_tr_sh_loss
+    #     shape_lum = product(config.test_shapes, config.lum_sets)
+    #     # for ts, (test_loader, (test_shapes, lums)) in enumerate(zip(self.test_loaders, shape_lum)):
+    #     for ts, test_loader in enumerate(self.test_loaders):
+    #         epoch_te_loss, epoch_te_num_loss, te_accuracy, epoch_te_sh_loss, epoch_te_map_loss, epoch_df, conf, te_map_acc = self.test(test_loader, 0)
+    #         epoch_df['train shapes'] = str(config.train_shapes)
+    #         # epoch_df['test shapes'] = str(test_shapes)
+    #         # epoch_df['test lums'] = str(lums)
+    #         epoch_df['test shapes'] = str(test_loader.shapes)
+    #         epoch_df['test lums'] = str(test_loader.lums)
+    #         epoch_df['testset'] = test_loader.testset
+    #         epoch_df['viewing'] = test_loader.viewing
+    #         epoch_df['repetition'] = config.rep
+    #         test_results = pd.concat((test_results, epoch_df), ignore_index=True)
+    #         test_count_num_loss[ts][0] = epoch_te_num_loss
+    #         test_acc_count[ts][0] = te_accuracy
+    #         test_acc_map[ts][0] = te_map_acc
+    #         test_count_map_loss[ts][0], test_full_map_loss[ts][0] = epoch_te_map_loss
+    #         test_loss[ts][0] = epoch_te_loss
+    #         test_sh_loss[ts][0] = epoch_te_sh_loss
+    #         confs[0][ts] = conf
+    #     print(f'Before Training:')
+    #     print(f'Train (Count/Dist/All) Num Loss={train_count_num_loss[0]:.4}/{train_dist_num_loss[0]:.4}/{train_all_num_loss[0]:.4} \t Accuracy={train_acc_count[0]:.3}%/{train_acc_dist[0]:.3}%/{train_acc_all[0]:.3}')
+    #     print(f'Train (Count/Dist/All) Map Loss={train_count_map_loss[0]:.4}/{train_dist_map_loss[0]:.4}/{train_full_map_loss[0]:.4}')
+    #     print(f'Test (Count/Dist/All) Num Loss={test_count_num_loss[-1][0]:.4}/{test_dist_num_loss[-1][0]:.4}/{test_all_num_loss[-1][0]:.4} \t Accuracy={test_acc_count[-1][0]:.3}%/{test_acc_dist[-1][0]:.3}%/{test_acc_all[-1][0]:.3}')
+    #     print(f'Test (Count/Dist/All) Map Loss={test_count_map_loss[-1][0]:.4}/{test_dist_map_loss[-1][0]:.4}/{test_full_map_loss[-1][0]:.4}')
         
-        savethisep = False
-        threshold = 26 # 1 greater than the checkpoint we actually want because this is at the beginning of the loop atfer ep has incremented (but no additional training has occurred)
-        if config.save_act:
-            print('Saving untrained activations...')
-            self.save_activations(self.model, self.test_loaders, base_name + '_init', config)
+    #     savethisep = False
+    #     threshold = 26 # 1 greater than the checkpoint we actually want because this is at the beginning of the loop atfer ep has incremented (but no additional training has occurred)
+    #     if config.save_act:
+    #         print('Saving untrained activations...')
+    #         self.save_activations(self.model, self.test_loaders, base_name + '_init', config)
         
-        tr_accuracy = 0
-        for ep in range(1, n_epochs + 1):
-            if tr_accuracy > threshold:
-                savethisep = True
-                threshold += 25 # This will be 51,76, and then 101 so we'll save at 51 and 76
-            if savethisep:
-                # Save confusion
-                np.save(f'{results_dir}/confusion_at_{threshold-26}_{base_name}', confs[ep - 1])
-                if config.save_act and savethisep:
-                    print(f'Saving activations at {threshold-26}% accuracy...')
-                    self.save_activations(self.model, self.test_loaders, f'{base_name}_acc{threshold-26}', config)
-                savethisep = False
-            epoch_timer = Timer()
+    #     tr_accuracy = 0
+    #     for ep in range(1, n_epochs + 1):
+    #         if tr_accuracy > threshold:
+    #             savethisep = True
+    #             threshold += 25 # This will be 51,76, and then 101 so we'll save at 51 and 76
+    #         if savethisep:
+    #             # Save confusion
+    #             np.save(f'{results_dir}/confusion_at_{threshold-26}_{base_name}', confs[ep - 1])
+    #             if config.save_act and savethisep:
+    #                 print(f'Saving activations at {threshold-26}% accuracy...')
+    #                 self.save_activations(self.model, self.test_loaders, f'{base_name}_acc{threshold-26}', config)
+    #             savethisep = False
+    #         epoch_timer = Timer()
 
-            ###### TRAIN ######
-            ep_tr_loss, ep_tr_num_loss, tr_accuracy, ep_tr_sh_loss, ep_tr_map_loss, map_acc = self.train(self.train_loader, ep)
-            train_count_num_loss[ep] = ep_tr_num_loss
-            train_acc_count[ep] = tr_accuracy
-            train_count_map_loss[ep], train_full_map_loss[ep] = ep_tr_map_loss
-            train_acc_map[ep] = map_acc
-            train_loss[ep] = ep_tr_loss  # optimized loss
-            train_sh_loss[ep] = ep_tr_sh_loss
+    #         ###### TRAIN ######
+    #         ep_tr_loss, ep_tr_num_loss, tr_accuracy, ep_tr_sh_loss, ep_tr_map_loss, map_acc = self.train(self.train_loader, ep)
+    #         train_count_num_loss[ep] = ep_tr_num_loss
+    #         train_acc_count[ep] = tr_accuracy
+    #         train_count_map_loss[ep], train_full_map_loss[ep] = ep_tr_map_loss
+    #         train_acc_map[ep] = map_acc
+    #         train_loss[ep] = ep_tr_loss  # optimized loss
+    #         train_sh_loss[ep] = ep_tr_sh_loss
 
-            ##### TEST ######
+    #         ##### TEST ######
            
-            # shape_lum = product(config.test_shapes, config.lum_sets)
-            for ts, test_loader in enumerate(self.test_loaders):
-                epoch_te_loss, epoch_te_num_loss, te_accuracy, epoch_te_sh_loss, epoch_te_map_loss, epoch_df, conf, te_map_acc = self.test(test_loader, ep)
-                epoch_df['train shapes'] = str(config.train_shapes)
-                epoch_df['test shapes'] = str(test_loader.shapes)  # str(test_shapes)
-                epoch_df['test lums'] = str(test_loader.lums)  # str(lums)
-                epoch_df['testset'] = test_loader.testset
-                epoch_df['viewing'] = test_loader.viewing
-                epoch_df['repetition'] = config.rep
-                test_results = pd.concat((test_results, epoch_df), ignore_index=True) # detailed 
+    #         # shape_lum = product(config.test_shapes, config.lum_sets)
+    #         for ts, test_loader in enumerate(self.test_loaders):
+    #             epoch_te_loss, epoch_te_num_loss, te_accuracy, epoch_te_sh_loss, epoch_te_map_loss, epoch_df, conf, te_map_acc = self.test(test_loader, ep)
+    #             epoch_df['train shapes'] = str(config.train_shapes)
+    #             epoch_df['test shapes'] = str(test_loader.shapes)  # str(test_shapes)
+    #             epoch_df['test lums'] = str(test_loader.lums)  # str(lums)
+    #             epoch_df['testset'] = test_loader.testset
+    #             epoch_df['viewing'] = test_loader.viewing
+    #             epoch_df['repetition'] = config.rep
+    #             test_results = pd.concat((test_results, epoch_df), ignore_index=True) # detailed 
                 
-                test_count_num_loss[ts][ep] = epoch_te_num_loss
-                test_acc_count[ts][ep] = te_accuracy
-                test_acc_map[ts][ep] = te_map_acc
-                test_count_map_loss[ts][ep], test_full_map_loss[ts][ep] = epoch_te_map_loss
-                test_loss[ts][ep] = epoch_te_loss
-                test_sh_loss[ts][ep] = epoch_te_sh_loss
-                test_losses = (test_loss, test_count_num_loss, test_count_map_loss, test_sh_loss)
-                test_accs = (test_acc_count, test_acc_map)
-                confs[ep][ts] = conf
+    #             test_count_num_loss[ts][ep] = epoch_te_num_loss
+    #             test_acc_count[ts][ep] = te_accuracy
+    #             test_acc_map[ts][ep] = te_map_acc
+    #             test_count_map_loss[ts][ep], test_full_map_loss[ts][ep] = epoch_te_map_loss
+    #             test_loss[ts][ep] = epoch_te_loss
+    #             test_sh_loss[ts][ep] = epoch_te_sh_loss
+    #             test_losses = (test_loss, test_count_num_loss, test_count_map_loss, test_sh_loss)
+    #             test_accs = (test_acc_count, test_acc_map)
+    #             confs[ep][ts] = conf
 
-            if not ep % 10 or ep == n_epochs - 1 or ep==1:
-                train_num_losses = (train_count_num_loss, train_dist_num_loss, train_all_num_loss)
-                train_map_losses = (train_count_map_loss, train_dist_map_loss, train_full_map_loss)
-                train_accs = (train_acc_count, train_acc_dist, train_acc_all, train_acc_map)
-                train_losses = (train_num_losses, train_map_losses, train_sh_loss)
-                # self.plot_performance(test_results, train_losses, train_accs, confs[ep], ep + 1, config)
-                # self.plot_performance_quick(test_losses, test_accs, train_losses, train_accs, confs[ep], ep + 1, config)
-            epoch_timer.stop_timer()
-            if isinstance(test_loss, list) and len(test_loss) > 3:
-                print(f'Epoch {ep}. LR={self.optimizer.param_groups[0]["lr"]:.4}')
-                # print(f'Train (Count/Dist/All) Num Loss={train_count_num_loss[ep]:.4}/{train_dist_num_loss[ep]:.4}/{train_all_num_loss[ep]:.4} \t Accuracy={train_acc_count[ep]:.3}%/{train_acc_dist[ep]:.3}%/{train_acc_all[ep]:.3}')
-                # Shape loss: {train_sh_loss[ep]:.4}')
-                # print(f'Train (Count/Dist/All) Map Loss={train_count_map_loss[ep]:.4}/{train_dist_map_loss[ep]:.4}/{train_full_map_loss[ep]:.4}')
-                # print(f'Test (Count/Dist/All) Num Loss={test_count_num_loss[-2][ep]:.4}/{test_dist_num_loss[-2][ep]:.4}/{test_all_num_loss[-2][ep]:.4} \t Accuracy={test_acc_count[-2][ep]:.3}%/{test_acc_dist[-2][ep]:.3}%/{test_acc_all[-2][ep]:.3}')
-                # print(f'Test (Count/Dist/All) Map Loss={test_count_map_loss[-2][ep]:.4}/{test_dist_map_loss[-2][ep]:.4}/{test_full_map_loss[-2][ep]:.4}')
-                # -2 to get ood_free
-                print(f'Train Loss={train_loss[ep]:.4} \t Accuracy={train_acc_count[ep]:.3}% \t Map F1={train_acc_map[ep]:.3}%' )
-                if config.human_sim:
-                    print(f'Test Val (Free/Fixed) Loss={test_count_num_loss[0][ep]:.4}/{test_count_num_loss[1][ep]:.4} \t Accuracy={test_acc_count[0][ep]:.3}%/{test_acc_count[1][ep]:.3}%')
-                    print(f'Test OOD (Free/Fixed) Loss={test_count_num_loss[2][ep]:.4}/{test_count_num_loss[3][ep]:.4} \t Accuracy={test_acc_count[2][ep]:.3}%/{test_acc_count[3][ep]:.3}%')
-                    if config.use_loss != 'num':
-                        print(f'Test Val (Free/Fixed) Map Loss={test_count_map_loss[0][ep]:.4}/{test_count_map_loss[1][ep]:.4} ')
-                        print(f'Test OOD (Free/Fixed) Map Loss={test_count_map_loss[2][ep]:.4}/{test_count_map_loss[3][ep]:.4} ')
-                    if config.learn_shape:
-                        print(f'Test Val (Free/Fixed) Shape Loss={test_sh_loss[0][ep]:.4}/{test_sh_loss[1][ep]:.4} ')
-                        print(f'Test OOD (Free/Fixed) Shape Loss={test_sh_loss[2][ep]:.4}/{test_sh_loss[3][ep]:.4} ')
-                else:
-                    print(f'Test Val Loss={test_count_num_loss[0][ep]:.4} \t Accuracy={test_acc_count[0][ep]:.3}%')
-                    print(f'Test OOD (Shape/Lum/Both) Loss={test_count_num_loss[1][ep]:.4}/{test_count_num_loss[2][ep]:.4}/{test_count_num_loss[3][ep]:.4} \t Accuracy={test_acc_count[1][ep]:.3}%/{test_acc_count[2][ep]:.3}%/{test_acc_count[3][ep]:.3}%')
-                    if config.use_loss != 'num':
-                        print(f'Test Val Map Loss={test_count_map_loss[0][ep]:.4}')
-                        print(f'Test OOD (Shape/Lum/Both) Map Loss={test_count_map_loss[1][ep]:.4}/{test_count_map_loss[2][ep]:.4}/{test_count_map_loss[3][ep]:.4} ')
-                    if config.learn_shape:
-                        print(f'Test Val Shape Loss={test_sh_loss[0][ep]:.4}')
-                        print(f'Test OOD (Shape/Lum/Both) Shape Loss={test_sh_loss[1][ep]:.4}/{test_sh_loss[2][ep]:.4}/{test_sh_loss[3][ep]:.4} ')
-            elif isinstance(test_loss, list) and len(test_loss) == 2:
-                print(f'Train Loss={train_loss[ep]:.4} \t Accuracy={train_acc_count[ep]:.3}% \t Map F1={train_acc_map[ep]:.3}%' )
-                print(f'Test Diff Loss={test_count_num_loss[0][ep]:.4} \t Accuracy={test_acc_count[0][ep]:.3}%')
-                print(f'Test Same Loss={test_count_num_loss[1][ep]:.4} \t Accuracy={test_acc_count[1][ep]:.3}%')
-            # else:
-            #     print(f'Epoch {ep}. LR={optimizer.param_groups[0]["lr"]:.4} \t (Train/Test) Num Loss={train_num_loss[ep]:.4}/{test_num_loss[ep]:.4}/ \t Accuracy={train_acc[ep]:.3}%/{test_acc[ep]:.3}% \t Shape loss: {train_sh_loss[ep]:.5} \t Map loss: {train_map_loss[ep]:.5}')
+    #         if not ep % 10 or ep == n_epochs - 1 or ep==1:
+    #             train_num_losses = (train_count_num_loss, train_dist_num_loss, train_all_num_loss)
+    #             train_map_losses = (train_count_map_loss, train_dist_map_loss, train_full_map_loss)
+    #             train_accs = (train_acc_count, train_acc_dist, train_acc_all, train_acc_map)
+    #             train_losses = (train_num_losses, train_map_losses, train_sh_loss)
+    #             # self.plot_performance(test_results, train_losses, train_accs, confs[ep], ep + 1, config)
+    #             # self.plot_performance_quick(test_losses, test_accs, train_losses, train_accs, confs[ep], ep + 1, config)
+    #         epoch_timer.stop_timer()
+    #         if isinstance(test_loss, list) and len(test_loss) > 3:
+    #             print(f'Epoch {ep}. LR={self.optimizer.param_groups[0]["lr"]:.4}')
+    #             # print(f'Train (Count/Dist/All) Num Loss={train_count_num_loss[ep]:.4}/{train_dist_num_loss[ep]:.4}/{train_all_num_loss[ep]:.4} \t Accuracy={train_acc_count[ep]:.3}%/{train_acc_dist[ep]:.3}%/{train_acc_all[ep]:.3}')
+    #             # Shape loss: {train_sh_loss[ep]:.4}')
+    #             # print(f'Train (Count/Dist/All) Map Loss={train_count_map_loss[ep]:.4}/{train_dist_map_loss[ep]:.4}/{train_full_map_loss[ep]:.4}')
+    #             # print(f'Test (Count/Dist/All) Num Loss={test_count_num_loss[-2][ep]:.4}/{test_dist_num_loss[-2][ep]:.4}/{test_all_num_loss[-2][ep]:.4} \t Accuracy={test_acc_count[-2][ep]:.3}%/{test_acc_dist[-2][ep]:.3}%/{test_acc_all[-2][ep]:.3}')
+    #             # print(f'Test (Count/Dist/All) Map Loss={test_count_map_loss[-2][ep]:.4}/{test_dist_map_loss[-2][ep]:.4}/{test_full_map_loss[-2][ep]:.4}')
+    #             # -2 to get ood_free
+    #             print(f'Train Loss={train_loss[ep]:.4} \t Accuracy={train_acc_count[ep]:.3}% \t Map F1={train_acc_map[ep]:.3}%' )
+    #             if config.human_sim:
+    #                 print(f'Test Val (Free/Fixed) Loss={test_count_num_loss[0][ep]:.4}/{test_count_num_loss[1][ep]:.4} \t Accuracy={test_acc_count[0][ep]:.3}%/{test_acc_count[1][ep]:.3}%')
+    #                 print(f'Test OOD (Free/Fixed) Loss={test_count_num_loss[2][ep]:.4}/{test_count_num_loss[3][ep]:.4} \t Accuracy={test_acc_count[2][ep]:.3}%/{test_acc_count[3][ep]:.3}%')
+    #                 if config.use_loss != 'num':
+    #                     print(f'Test Val (Free/Fixed) Map Loss={test_count_map_loss[0][ep]:.4}/{test_count_map_loss[1][ep]:.4} ')
+    #                     print(f'Test OOD (Free/Fixed) Map Loss={test_count_map_loss[2][ep]:.4}/{test_count_map_loss[3][ep]:.4} ')
+    #                 if config.learn_shape:
+    #                     print(f'Test Val (Free/Fixed) Shape Loss={test_sh_loss[0][ep]:.4}/{test_sh_loss[1][ep]:.4} ')
+    #                     print(f'Test OOD (Free/Fixed) Shape Loss={test_sh_loss[2][ep]:.4}/{test_sh_loss[3][ep]:.4} ')
+    #             else:
+    #                 print(f'Test Val Loss={test_count_num_loss[0][ep]:.4} \t Accuracy={test_acc_count[0][ep]:.3}%')
+    #                 print(f'Test OOD (Shape/Lum/Both) Loss={test_count_num_loss[1][ep]:.4}/{test_count_num_loss[2][ep]:.4}/{test_count_num_loss[3][ep]:.4} \t Accuracy={test_acc_count[1][ep]:.3}%/{test_acc_count[2][ep]:.3}%/{test_acc_count[3][ep]:.3}%')
+    #                 if config.use_loss != 'num':
+    #                     print(f'Test Val Map Loss={test_count_map_loss[0][ep]:.4}')
+    #                     print(f'Test OOD (Shape/Lum/Both) Map Loss={test_count_map_loss[1][ep]:.4}/{test_count_map_loss[2][ep]:.4}/{test_count_map_loss[3][ep]:.4} ')
+    #                 if config.learn_shape:
+    #                     print(f'Test Val Shape Loss={test_sh_loss[0][ep]:.4}')
+    #                     print(f'Test OOD (Shape/Lum/Both) Shape Loss={test_sh_loss[1][ep]:.4}/{test_sh_loss[2][ep]:.4}/{test_sh_loss[3][ep]:.4} ')
+    #         elif isinstance(test_loss, list) and len(test_loss) == 2:
+    #             print(f'Train Loss={train_loss[ep]:.4} \t Accuracy={train_acc_count[ep]:.3}% \t Map F1={train_acc_map[ep]:.3}%' )
+    #             print(f'Test Diff Loss={test_count_num_loss[0][ep]:.4} \t Accuracy={test_acc_count[0][ep]:.3}%')
+    #             print(f'Test Same Loss={test_count_num_loss[1][ep]:.4} \t Accuracy={test_acc_count[1][ep]:.3}%')
+    #         # else:
+    #         #     print(f'Epoch {ep}. LR={optimizer.param_groups[0]["lr"]:.4} \t (Train/Test) Num Loss={train_num_loss[ep]:.4}/{test_num_loss[ep]:.4}/ \t Accuracy={train_acc[ep]:.3}%/{test_acc[ep]:.3}% \t Shape loss: {train_sh_loss[ep]:.5} \t Map loss: {train_map_loss[ep]:.5}')
         
-        # Save network activations
-        if config.save_act:
-            print('Saving activations...')
-            self.save_activations(self.model, self.test_loaders, base_name + '_trained', config)
+    #     # Save network activations
+    #     if config.save_act:
+    #         print('Saving activations...')
+    #         self.save_activations(self.model, self.test_loaders, base_name + '_trained', config)
 
-        train_num_losses = (train_count_num_loss, train_dist_num_loss, train_all_num_loss)
-        train_map_losses = (train_count_map_loss, train_dist_map_loss, train_full_map_loss)
-        train_losses = (train_num_losses, train_map_losses, train_sh_loss)
-        train_accs = (train_acc_count, train_acc_dist, train_acc_all)
-        test_num_losses = (test_count_num_loss, test_dist_num_loss, test_all_num_loss)
-        test_map_losses = (test_count_map_loss, test_dist_map_loss, test_full_map_loss)
-        test_losses = (test_num_losses, test_map_losses, test_sh_loss)
-        test_accs = (test_acc_count, test_acc_map, test_acc_dist, test_acc_all)
+    #     train_num_losses = (train_count_num_loss, train_dist_num_loss, train_all_num_loss)
+    #     train_map_losses = (train_count_map_loss, train_dist_map_loss, train_full_map_loss)
+    #     train_losses = (train_num_losses, train_map_losses, train_sh_loss)
+    #     train_accs = (train_acc_count, train_acc_dist, train_acc_all)
+    #     test_num_losses = (test_count_num_loss, test_dist_num_loss, test_all_num_loss)
+    #     test_map_losses = (test_count_map_loss, test_dist_map_loss, test_full_map_loss)
+    #     test_losses = (test_num_losses, test_map_losses, test_sh_loss)
+    #     test_accs = (test_acc_count, test_acc_map, test_acc_dist, test_acc_all)
 
-        # res_tr  = [train_loss, train_acc, train_num_loss, train_sh_loss, train_full_map_loss, train_count_map_loss]
-        # res_te = [test_loss, test_acc, test_num_loss, test_sh_loss, test_full_map_loss, test_count_map_loss, confs, test_results]
-        res_tr = [train_losses, train_accs]
-        res_te = [test_losses, test_accs,  confs, test_results]
-        results_list = res_tr + res_te
-        return self.model, results_list
+    #     # res_tr  = [train_loss, train_acc, train_num_loss, train_sh_loss, train_full_map_loss, train_count_map_loss]
+    #     # res_te = [test_loss, test_acc, test_num_loss, test_sh_loss, test_full_map_loss, test_count_map_loss, confs, test_results]
+    #     res_tr = [train_losses, train_accs]
+    #     res_te = [test_losses, test_accs,  confs, test_results]
+    #     results_list = res_tr + res_te
+    #     return self.model, results_list
     
     @torch.no_grad()
     def test(self, loader, ep):
@@ -823,6 +825,8 @@ class Trainer():
                 recall = true_positive.sum(dim=0)/true
                 f1 = 2*((precision * recall)/(precision + recall)) 
                 f1_sum += f1.nanmean().item()
+
+                n_correct += pred.eq(target.view_as(pred)).sum().item()
 
                 epoch_loss += loss.mean().item()
                 num_epoch_loss += num_loss.mean().item()
