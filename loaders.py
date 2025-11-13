@@ -249,7 +249,7 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
                 if 'ghost' in shape_format:
                     # remove distractor shape
                     shape_array[:, :, 0] = 0
-                shape_input = torch.tensor(shape_array).float()#.to(config.device)
+                shape_input = torch.tensor(shape_array).float().to(config.device)
             elif shape_format == 'onehot':
                 onehot_array = dataset['glimpse_shape_onehot'].values   # [N, T, num_shapes]
                 shape_input = torch.tensor(onehot_array).float().to(config.device)
