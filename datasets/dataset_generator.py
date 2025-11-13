@@ -539,15 +539,6 @@ class DatasetGenerator:
             shape_id = shape_map[slot_idx]
             glimpse_onehot[g_idx, shape_id] = 1.0
 
-        #     print("glimpse_onehot shape:", glimpse_onehot.shape)
-        #     print("glimpse_onehot:", glimpse_onehot)
-        #     #print("row sums (first 5):", glimpse_onehot[:5])
-        #     for g in range(min(12, self.n_glimpses)):
-        #         cols = np.where(glimpse_onehot[g] == 1.0)[0]
-        #         print(f"  glimpse {g} → shape ids {cols.tolist()}")
-        #     print("shape_map sample:", list(shape_map.items()))
-        #     print("----------------------")
-
         # print(f'shape_coords:\n{shape_coords.shape}, shape_map: {shape_map}, shape_hist: {shape_hist}')
         min_count = np.min([c for c in shape_hist if c > 0]) if np.any(shape_hist) else 0 # minimum number of any shape in the image
         max_count = np.max([c for c in shape_hist if c > 0]) if np.any(shape_hist) else 0
@@ -589,6 +580,10 @@ class DatasetGenerator:
         # final_pass_count = pass_count
         # unique_objects = set(example.objects)
         all_objects = to_count + distractors
+        shape_counts = np.zeros(self.n_shapes, dtype=np.int32)
+        for slot in all_objects:
+            class_idx = shape_map[slot]
+            shape_counts[class_idx] += 1
         filled_locations = [1 if i in all_objects else 0 for i in range(self.grid_size)]
 
         locations_class_index = np.zeros(self.grid_size, dtype=int)
@@ -626,6 +621,12 @@ class DatasetGenerator:
         # these won't be exactly correct because of the small outerborder.
         target_coords_1x1 = [self.possible_centroids[target] for target in to_count]
         distract_coords_1x1 = [self.possible_centroids[distract] for distract in distractors]
+        # print('Shapes:', shape_map)
+        # print('Chosen pair:', chosen_pair)
+        # print('Min Count:', min_count)
+        # print("Total nr of objects:", num)
+        # print("shape counts:", shape_counts)
+        # print("shape hist:", shape_hist)
         example_dict = {'glimpse_coords_1x1': xy_coords, 'symbolic_shape': shape_coords,
                         'numerosity_target': num,
                         'numerosity_dist': len(distractors),
@@ -640,6 +641,7 @@ class DatasetGenerator:
                         'locations_class_max': locations_class_max,
                         'locations_class_index': locations_class_index,
                         'locations_count': locations_2count,
+                        'shape_counts': shape_counts,
                         'locations_distract': locations_dist,
                         'object_coords': noiseless_coords,
                         'shape_map': shape_map,
@@ -652,6 +654,7 @@ class DatasetGenerator:
                         # 'initial_candidates': initial_candidates,
                         # 'initial_filled_locations': initial_filled_locations,
                         'shape_hist': shape_hist,
+                        'shape_counts': shape_counts,
                         'target_coords_1x1': target_coords_1x1,
                         'distract_coords_1x1': distract_coords_1x1
                         }
@@ -688,80 +691,87 @@ class DatasetGenerator:
             n_distract = np.zeros_like(nums)
             n_unique = np.empty_like(nums) * np.nan
 
-        # --- Decide which label we're balancing ---
-        if config.task_type == 'min':
-            label_key = 'numerosity_min'
-            label_range = set()
-            for n in range(config.min_num, config.max_num + 1):
-                half = n // 2
-                for m in range(1, half + 1):
-                    if n % 2 == 0 and m == half:  # skip equal split when forbidden
-                        continue
-                    label_range.add(m)
-            # print(label_range)
-        elif config.task_type == 'max':
-            label_key = 'numerosity_max'
-            label_range = set()
-            for n in range(config.min_num, config.max_num + 1):
-                half = n // 2
-                for m in range(1, half + 1):
-                    if n % 2 == 0 and m == half:
-                        continue
-                    label_range.add(n - m)
-            # print(label_range)
-        else:
-            label_key = 'numerosity_min'
-            label_range = set(range(1, ceil(config.max_num / 2) + 1))
+        if config.task_type in ['min', 'max'] and getattr(config, 'pair_split', None):
+            # --- Decide which label we're balancing ---
+            if config.task_type == 'min':
+                label_key = 'numerosity_min'
+                label_range = set()
+                for n in range(config.min_num, config.max_num + 1):
+                    half = n // 2
+                    for m in range(1, half + 1):
+                        if n % 2 == 0 and m == half:  # skip equal split when forbidden
+                            continue
+                        label_range.add(m)
+                # print(label_range)
+            elif config.task_type == 'max':
+                label_key = 'numerosity_max'
+                label_range = set()
+                for n in range(config.min_num, config.max_num + 1):
+                    half = n // 2
+                    for m in range(1, half + 1):
+                        if n % 2 == 0 and m == half:
+                            continue
+                        label_range.add(n - m)
+                # print(label_range)
 
-        label_target = ceil(config.size / len(label_range))
-        # print(label_target)
-        label_counts = defaultdict(int)
+            # Per-label quota
+            label_target = ceil(config.size / len(label_range))
+            # print(label_target)
+            label_counts = defaultdict(int)
 
-        # --- Prepare pairs ---
-        pair_schedule = None
-        pair_target = None
-        if getattr(config, 'allowed_pairs', None):
-            # List of allowed pairs
-            P = [tuple(sorted(p)) for p in config.allowed_pairs]
-            #pair_schedule = P * (config.size // len(P)) + P[: config.size % len(P)]
-            repeats = n_examples // len(P)
-            rem = n_examples % len(P)
-            pair_schedule = P * repeats + random.sample(P, rem) if rem > 0 else P * repeats
-            # print('pair_schedule', pair_schedule)
-            random.shuffle(pair_schedule)
-            pair_target = ceil(config.size / len(P))
-            # print('pair_target', pair_target)
-        pair_counts = defaultdict(int)
+            # --- Prepare pairs ---
+            pair_schedule = None
+            pair_target = None
+            if getattr(config, 'allowed_pairs', None):
+                # List of allowed pairs
+                P = [tuple(sorted(p)) for p in config.allowed_pairs]
+                #pair_schedule = P * (config.size // len(P)) + P[: config.size % len(P)]
+                repeats = n_examples // len(P)
+                rem = n_examples % len(P)
+                # Shuffled list that repeats each allowed pair enough times to cover the dataset size
+                pair_schedule = P * repeats + random.sample(P, rem) if rem > 0 else P * repeats
+                # print('pair_schedule', pair_schedule)
+                random.shuffle(pair_schedule)
+                # Per-pair quota
+                pair_target = ceil(config.size / len(P))
+                # print('pair_target', pair_target)
+            pair_counts = defaultdict(int)
 
-        # --- Generate balanced examples ---
-        data = []
-        i = 0
-        while len(data) < config.size:
-            idx = i % len(nums)                      
-            chosen_pair = pair_schedule[idx] if pair_schedule else None
-            example = self.generate_one_example(nums[idx], n_distract[idx],
-                                                n_unique[idx], config, chosen_pair)
+            # --- Generate balanced examples ---
+            pair_schedule_len = len(pair_schedule) if pair_schedule else 0
+            data = []
+            i = 0
+            while len(data) < config.size:
+                idx = i % len(nums)     
+                if pair_schedule:
+                    pair_idx = i % pair_schedule_len
+                    chosen_pair = pair_schedule[pair_idx]
+                else:
+                    chosen_pair = None                
+                example = self.generate_one_example(nums[idx], n_distract[idx],
+                                                    n_unique[idx], config, chosen_pair)
 
-            lbl = example.get(label_key, None)
-            if lbl not in label_range:
+                # Rejects any example whose label isn’t in the allowable range
+                lbl = example.get(label_key, None)
+                if lbl not in label_range:
+                    i += 1
+                    continue
+
+                # If the label already hit label_target, skip it
+                if label_counts[lbl] >= label_target:
+                    i += 1
+                    continue
+
+                # If the pair already hit pair_target, skip it
+                if chosen_pair and pair_counts[chosen_pair] >= pair_target:
+                    i += 1
+                    continue
+
+                label_counts[lbl] += 1
+                if chosen_pair:
+                    pair_counts[chosen_pair] += 1
+                data.append(example)
                 i += 1
-                continue
-
-            # If the label already hit label_target, skip it
-            if label_counts[lbl] >= label_target:
-                i += 1
-                continue
-
-            # If the pair already hit pair_target, skip it
-            if chosen_pair and pair_counts[chosen_pair] >= pair_target:
-                i += 1
-                continue
-
-            label_counts[lbl] += 1
-            if chosen_pair:
-                pair_counts[chosen_pair] += 1
-            data.append(example)
-            i += 1
 
         # print(label_counts)
 
@@ -784,6 +794,14 @@ class DatasetGenerator:
         #     example = self.generate_one_example(nums[i], n_distract[i], n_unique[i], config, chosen_pair)
         #     data.append(example)
         # # data = [generate_one_example(nums[i], noise_level, pass_count_range, num_range, shapes_set, n_shapes, same) for i in range(n_examples)]
+
+        else:
+            data = []
+            for i in tqdm(range(n_examples)):
+                # if not i % 10:
+                    # print(f'Generating info for image {i}', end='\r')
+                example = self.generate_one_example(nums[i], n_distract[i], n_unique[i], config)
+                data.append(example)
         df = pd.DataFrame(data)
         return df
     
@@ -826,6 +844,7 @@ class DatasetGenerator:
                 # 'initial_candidates': (["image"], df['initial_candidates']),
                 # 'initial_filled_locations': (["image"], df['initial_filled_locations']),
                 'shape_hist': (["image", "character"], np.stack(df['shape_hist'].to_numpy())),
+                'shape_counts': (["image", "character"], np.stack(df['shape_counts'].to_numpy())),
                 # "pixel_topleft": self.pixel_topleft,
                 # "possible_centroids": self.possible_centroids,
                 # "map_scale_pixel": self.map_scale_pixel,
