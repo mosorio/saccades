@@ -24,7 +24,7 @@ echo "main log:    ${logfile_main}"
 python3 ventral.py \
   --model_type=cnn --policy=cheat+jitter --logpolar --loss=mse --solarize \
   --shape_input=logpolar --min_num="${min_num}" --max_num="${max_num}" \
-  --train_shapes=BCDEFGHJ --test_shapes BCDEFGHJ \
+  --train_shapes=BCDE --test_shapes BCDE \
   --lums 0.1 0.4 0.7 0.3 0.6 0.9 --noise_level=0.74 \
   --train_size=40000 --test_size=4000 --act=lrelu --dropout=0.4 \
   --rep=0 --grid=6 --n_epochs=200 --opt=Adam --n_glimpses="${n_glimpses}" --multiclass \
@@ -33,12 +33,12 @@ python3 ventral.py \
 # --- Run main.py ---
 python3 main.py \
   --model_type=pretrained_ventral-cnn-mse --sort --pass_penult --train_on=both \
-  --use_loss=num --opt=Adam --wd=0.00001 --distinctive=0.3 --challenge="${task}" \
+  --use_loss=both --opt=Adam --wd=0.00001 --distinctive=0.3 --challenge="${task}" \
   --shape_input=logpolar --min_num="${min_num}" --max_num="${max_num}" \
-  --n_glimpses="${n_glimpses}" --h_size=1024 --train_shapes=BCDEFGHJ --test_shapes BCDEFGHJ \
+  --n_glimpses="${n_glimpses}" --h_size=1024 --train_shapes=BCDE --test_shapes BCDE \
   --noise_level=0.74 --train_size=100000 --test_size=5000 --n_epochs=300 \
-  --act=lrelu --dropout=0.5 --rep=0 --grid=6 --map_shape_count=8 --save_act \
-  --ventral="ventral_cnn-lrelu_hsize-25_logpolar_num${min_num}-${max_num}_nl-0.74_diff-0-6_grid6_policy-cheat+jitter_lum-[0.1, 0.4, 0.7, 0.3, 0.6, 0.9]_trainshapes-BCDEFGHJ__logpolar_40000_loss-mse_opt-Adam_drop0.4_200eps_rep0_ep-200.pt" \
+  --act=lrelu --dropout=0.5 --rep=0 --grid=6 --map_shape_count=4 --head=relational --save_act \
+  --ventral="ventral_cnn-lrelu_hsize-25_logpolar_num${min_num}-${max_num}_nl-0.74_diff-0-6_grid6_policy-cheat+jitter_lum-[0.1, 0.4, 0.7, 0.3, 0.6, 0.9]_trainshapes-BCDE__logpolar_40000_loss-mse_opt-Adam_drop0.4_200eps_rep0_ep-200.pt" \
    | tee "${logfile_main}"
 
 

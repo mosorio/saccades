@@ -22,28 +22,28 @@ args = p.parse_args()
 
 # # --- Training data ---
 
-E01file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEFGHJdistinct-0.3_pair-train_grid6_policy-cheat+jitter_lum[0.1, 0.4, 0.7]_logpolar_{args.n_glimpses}_10000.nc'
-E03file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEFGHJdistinct-0.3_pair-train_grid6_policy-cheat+jitter_lum[0.3, 0.6, 0.9]_logpolar_{args.n_glimpses}_10000.nc'
-F01file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEFGHJdistinct-0.3_pair-test_grid6_policy-cheat+jitter_lum[0.1, 0.4, 0.7]_logpolar_{args.n_glimpses}_10000.nc'
-F03file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEFGHJdistinct-0.3_pair-test_grid6_policy-cheat+jitter_lum[0.3, 0.6, 0.9]_logpolar_{args.n_glimpses}_10000.nc'
+E01file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEdistinct-0.3_pair-train_grid6_policy-cheat+jitter_lum[0.1, 0.4, 0.7]_logpolar_{args.n_glimpses}_10000.nc'
+E03file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEdistinct-0.3_pair-train_grid6_policy-cheat+jitter_lum[0.3, 0.6, 0.9]_logpolar_{args.n_glimpses}_10000.nc'
+F01file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEdistinct-0.3_pair-test_grid6_policy-cheat+jitter_lum[0.1, 0.4, 0.7]_logpolar_{args.n_glimpses}_10000.nc'
+F03file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEdistinct-0.3_pair-test_grid6_policy-cheat+jitter_lum[0.3, 0.6, 0.9]_logpolar_{args.n_glimpses}_10000.nc'
 
 E01 = xr.open_dataset(DATA_DIR + E01file)
 E03 = xr.open_dataset(DATA_DIR + E03file)
 F01 = xr.open_dataset(DATA_DIR + F01file)
 F03 = xr.open_dataset(DATA_DIR + F03file)
 merged = xr.concat([E01, E03, F01, F03], dim='image')
-merged.to_netcdf(DATA_DIR + f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEFGHJdistinct-0.3_grid6_policy-cheat+jitter_lum[0.1, 0.4, 0.7, 0.3, 0.6, 0.9]_logpolar_{args.n_glimpses}_40000.nc')
+merged.to_netcdf(DATA_DIR + f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEdistinct-0.3_grid6_policy-cheat+jitter_lum[0.1, 0.4, 0.7, 0.3, 0.6, 0.9]_logpolar_{args.n_glimpses}_40000.nc')
 
 # # --- Test data ---
-E01file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEFGHJdistinct-0.3_pair-train_grid6_policy-cheat+jitter_lum[0.1, 0.4, 0.7]_logpolar_{args.n_glimpses}_1000.nc'
-F01file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEFGHJdistinct-0.3_pair-train_grid6_policy-cheat+jitter_lum[0.1, 0.4, 0.7]_logpolar_{args.n_glimpses}_1000.nc'
-E03file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEFGHJdistinct-0.3_pair-test_grid6_policy-cheat+jitter_lum[0.3, 0.6, 0.9]_logpolar_{args.n_glimpses}_1000.nc'
-F03file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEFGHJdistinct-0.3_pair-test_grid6_policy-cheat+jitter_lum[0.3, 0.6, 0.9]_logpolar_{args.n_glimpses}_1000.nc'
+E01file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEdistinct-0.3_pair-train_grid6_policy-cheat+jitter_lum[0.1, 0.4, 0.7]_logpolar_{args.n_glimpses}_1000.nc'
+F01file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEdistinct-0.3_pair-train_grid6_policy-cheat+jitter_lum[0.1, 0.4, 0.7]_logpolar_{args.n_glimpses}_1000.nc'
+E03file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEdistinct-0.3_pair-test_grid6_policy-cheat+jitter_lum[0.3, 0.6, 0.9]_logpolar_{args.n_glimpses}_1000.nc'
+F03file = f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEdistinct-0.3_pair-test_grid6_policy-cheat+jitter_lum[0.3, 0.6, 0.9]_logpolar_{args.n_glimpses}_1000.nc'
 
 E01 = xr.open_dataset(DATA_DIR + E01file)
 E03 = xr.open_dataset(DATA_DIR + E03file)
 F01 = xr.open_dataset(DATA_DIR + F01file)
 F03 = xr.open_dataset(DATA_DIR + F03file)
 merged = xr.concat([E01, E03, F01, F03], dim='image')
-merged.to_netcdf(DATA_DIR + f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEFGHJdistinct-0.3_grid6_policy-cheat+jitter_lum[0.1, 0.4, 0.7, 0.3, 0.6, 0.9]_logpolar_{args.n_glimpses}_4000.nc')
+merged.to_netcdf(DATA_DIR + f'num{args.min_num}-{args.max_num}_nl-0.74_BCDEdistinct-0.3_grid6_policy-cheat+jitter_lum[0.1, 0.4, 0.7, 0.3, 0.6, 0.9]_logpolar_{args.n_glimpses}_4000.nc')
 
