@@ -61,8 +61,11 @@ criterion_bce = nn.BCEWithLogitsLoss()
 def align_outputs_targets(pred, target, config): 
     if config.sort: 
         return pred[:, :2], target[:, :2] 
+    elif config.multiclass and config.challenge == 'distract012':
+        cols = [0] + list(config.train_shapes)      # distractor + active shapes
+        return pred[:, cols], target[:, cols]
     elif config.multiclass: 
-        return pred, target[:, config.train_shapes] 
+        return pred[:, config.train_shapes], target[:, config.train_shapes] 
     else: 
         return pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES]
 
@@ -152,6 +155,7 @@ def train_one_epoch(train_loader, model, optimizer, which_loss, config, device):
         batch_n += 1
         pred, _ = model(input)
 
+        print('target', target)
         pred, target = align_outputs_targets(pred, target, config)
         mse = criterion_mse(pred, target)
         ce = criterion_ce(pred, target)
@@ -518,7 +522,7 @@ def get_dataframe(size, shapes_set, config, lums):
     transform = 'logpolar_' if config.logpolar else f'gw6_'
     # fname_gw = f'{home}/toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}_{challenge}_grid{config.grid}_policy-cheat+jitter_lum{lums}_{transform}12_{size}.pkl'
     # fname_gw = f'{home}/toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}_{challenge}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}12_{size}'
-    fname_gw = f'{home}/datasets/image_sets_min_max/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{distinctiveness}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}{n_glimpses}_{size}'
+    fname_gw = f'{home}/datasets/image_sets_min_max/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{distinctiveness}_{challenge}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}{n_glimpses}_{size}'
     
     if os.path.exists(fname_gw+'.nc'):
         print(f'Loading saved dataset {fname_gw}.nc')
@@ -530,7 +534,7 @@ def get_dataframe(size, shapes_set, config, lums):
     else:
         try:
             transform = 'polar_'
-            fname_gw = f'{home}/datasets/image_sets_min_max/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{distinctiveness}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}{n_glimpses}_{size}'
+            fname_gw = f'{home}/datasets/image_sets_min_max/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{distinctiveness}_{challenge}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}{n_glimpses}_{size}'
             data = xr.open_dataset(fname_gw+'.nc')
         except:
             print(f'{fname_gw} does not exist. Exiting.')
@@ -738,6 +742,8 @@ def get_model(config, device):
 
     if config.sort:
         output_size = 2
+    elif config.multiclass and config.challenge == 'distract012':
+        output_size = len(config.train_shapes) + 1  # adapt to the actual shapes used
     elif config.multiclass:
         output_size = len(config.train_shapes)  # adapt to the actual shapes used
     else:

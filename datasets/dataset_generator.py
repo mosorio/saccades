@@ -449,6 +449,7 @@ class DatasetGenerator:
         shape_hist = [sum(shape_map_vector == shape) for shape in range(self.n_shapes)]
         # print(f'shape_map_vector: {shape_map_vector}, hist:{shape_hist}')
         shape_coords = self.calculate_proximity(glimpse_coords, item_coords, item_slots, shape_map)
+        # print(f'shape_coords shape:\n{shape_coords.shape}')
         # print(f'shape_coords:\n{shape_coords}')
         # shape_coords[glimpse_idx, shape_idx] = 1 - eu_dist[glimpse_idx, obj_idx]/min_dist
         # make sure each glimpse has at least some shape info (not if random glimpses)
@@ -522,7 +523,7 @@ class DatasetGenerator:
         # print(f'num: {num}, objects: {objects}, to_count: {to_count}, distractors: {distractors}')
         shape_coords, shape_map, shape_hist = self.get_shape_coords(xy_coords, shapes_set, distinctiveness, to_count, distractors, task_type, chosen_pair)
 
-        
+        # print("To count", to_count)
         # Generate one-hot encoding of shape identity for each glimpse
         # shape_map: {slot_index: shape_id}
         num_shapes = self.n_shapes
@@ -691,7 +692,7 @@ class DatasetGenerator:
             n_distract = np.zeros_like(nums)
             n_unique = np.empty_like(nums) * np.nan
 
-        if config.task_type in ['min', 'max'] and getattr(config, 'pair_split', None):
+        if getattr(config, 'pair_split', None):
             # --- Decide which label we're balancing ---
             if config.task_type == 'min':
                 label_key = 'numerosity_min'
