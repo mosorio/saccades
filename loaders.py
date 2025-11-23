@@ -62,7 +62,7 @@ def get_dataset(size, shapes_set, config, lums, solarize, pair_group):
     # fname_gw = f'toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}{challenge}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}.pkl'
     # fname_gw = f'toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}{challenge}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}.nc'
     datadir = 'datasets/image_sets_min_max'
-    base = f"{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}"
+    base = f"{datadir}/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{shape_distinctiveness}{challenge}"
     if pair_group is not None:
         base += f"_pair-{pair_group}"
     fname_gw = f"{base}_grid{config.grid}_policy-{policy}_lum{lums}_{transform}{n_glimpses}{size}"
@@ -118,13 +118,18 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
         num_field = 'numerosity_min' if config.task_type == 'min' else 'numerosity_max'
         count_num = torch.tensor(dataset[num_field].values).long().to(config.device)
         dist_num = torch.zeros_like(count_num).long().to(config.device)
-    elif config.task_type == 'count' and config.head == 'counting':
-        count_num = torch.tensor(dataset['shape_hist'].values[:,1:10]).long().to(config.device) #[:,1:config.max_num+2]
-        dist_num = torch.zeros_like(count_num).long().to(config.device)
-        # print("count_num", count_num[:10])
-    elif config.task_type == 'count':
+    elif config.head == 'counting' and config.count_mode =='total':
+        print('Using numerosity_target as count target')
         count_num = torch.tensor(dataset['numerosity_target'].values).long().to(config.device)
         dist_num = torch.zeros_like(count_num).long().to(config.device)
+    elif config.head == 'counting' and config.count_mode =='per_shape':
+        print('Using shape_hist as count target')
+        count_num = torch.tensor(dataset['shape_hist'].values[:,:len(config.train_shapes)+1]).long().to(config.device) #[:,1:config.max_num+2]
+        dist_num = torch.zeros_like(count_num).long().to(config.device)
+        # print("count_num", count_num[:10])
+    # elif config.task_type == 'count':
+    #     count_num = torch.tensor(dataset['numerosity_target'].values).long().to(config.device)
+    #     dist_num = torch.zeros_like(count_num).long().to(config.device)
     elif target_type == 'all':
         total_num = np.sum(dataset['locations'].values, axis=1)
         target = torch.tensor(total_num).long().to(config.device)
@@ -187,7 +192,19 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
 
     ### MAP LABEL ###
     # true_loc = torch.tensor(dataset['locations']).float().to(config.device)
-    if config.task_type in ['min', 'max']:
+    if config.head == 'counting':
+        print('Using one-hot version of locations_class_index as count map target')
+        loc_idx = torch.tensor(dataset['locations_class_index'].values).long()  # [B, grid]
+        n_shapes = (loc_idx.max().item() + 1)
+        mask = (loc_idx > 0)                                   # True where a shape exists
+        shape_ids = torch.clamp(loc_idx - 1, min=0)            # shift so shape 1→0, etc.
+        one_hot = torch.nn.functional.one_hot(shape_ids, num_classes=n_shapes).float()  # [B, grid, n_shapes]
+        one_hot *= mask.unsqueeze(-1).float()                          # zero out background
+        per_shape_map = one_hot.permute(0, 2, 1)                       # [B, n_shapes, grid]
+        count_loc = per_shape_map          # use per-shape mask as the map target
+        all_loc = per_shape_map.clone()   
+
+    elif config.task_type in ['min', 'max']:
         loc_field = 'locations_class_min' if config.task_type == 'min' else 'locations_class_max'
         # loc_field = 'locations_class_index'  # using index map instead of one hot class map
         locations_class = dataset[loc_field].values.astype(np.float32)

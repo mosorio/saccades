@@ -43,7 +43,8 @@ def choose_model(config, model_dir):
                 'pass_penult':config.pass_penult, 'sigmoid':sigmoid,
                 'task_type': getattr(config, 'task_type', 'count'),
                 'map_classes': getattr(config, 'map_shape_count', None),
-                'head': config.head, 'min_num': config.min_num, 'max_num': config.max_num
+                'head': config.head, 'min_num': config.min_num, 'max_num': config.max_num,
+                'count_mode': config.count_mode
                 }
     if 'par' in model_type:# == 'rnn_classifier_par':
         # Model with two parallel streams at the level of the map. Only one
@@ -256,6 +257,76 @@ class PretrainedVentral(nn.Module):
         
         num, pix, map_, hidden, premap, penult = self.rnn(x, hidden)
         return num, shape_pred, map_, hidden, premap, penult 
+    
+    
+# class CountingHead(nn.Module):
+#     def __init__(self, map_dim, n_shapes, mode='total'):
+#         super().__init__()
+#         self.map_dim = map_dim          # grid**2 (already flattened map)
+#         self.n_shapes = n_shapes        # len(train_shapes) (+1 if distractor)
+#         self.mode = mode                # 'total' or 'per_shape'
+
+#         self.map_project = nn.Linear(map_dim, n_shapes, bias=False)
+#         self.total_fc = nn.Linear(n_shapes, 1)
+
+#     def forward(self, map_logits_flat):
+#         # map_logits_flat: [B, map_dim]
+#         per_shape_logits = self.map_project(map_logits_flat)      # [B, n_shapes]
+
+#         if self.mode == 'total':
+#             total_logits = self.total_fc(per_shape_logits)        # [B, 1]
+#             return per_shape_logits, total_logits
+#         else:
+#             return per_shape_logits, per_shape_logits
+
+class CountingHead(nn.Module):
+    def __init__(self, hidden_dim, map_dim, n_shapes, n_counts, mode='total'):
+        super().__init__()
+        self.map_dim  = map_dim
+        self.n_shapes = n_shapes
+        self.mode     = mode
+        self.n_counts = n_counts
+
+        # Generate per-shape map logits from hidden state: [B, S*M]
+        self.map_gen  = nn.Linear(hidden_dim, map_dim * n_shapes)
+
+        # Pool a single score from each shape's map (pure linear sum across cells)
+        self.map_pool = nn.Linear(map_dim, 1, bias=False)
+        # self.total_fc = nn.Linear(n_shapes, 1)
+
+        # Per-shape counting head: each shape's map -> its own K+1 logits
+        self.per_shape_fc = nn.Linear(map_dim, self.n_counts, bias=True)
+
+        self.total_fc = None
+        if mode == 'total':
+            assert self.n_counts is not None and self.n_counts > 1, "Need K+1 classes for CE."
+            self.total_fc = nn.Linear(n_shapes, self.n_counts)
+        else:
+            self.total_fc = None
+
+    def forward(self, h):  # h: [B, hidden_dim]
+        B = h.size(0)
+
+        # ----- Per-shape maps (logits for BCE): [B, S, M]
+        maps_flat = self.map_gen(h)                         # [B, n_shapes*map_dim]
+        per_shape_maps = maps_flat.view(B, self.n_shapes, self.map_dim)  # [B, S, M]
+
+        # ----- Pooled per-shape scores: [B, S]
+        per_shape_scores = self.map_pool(
+            per_shape_maps.view(B*self.n_shapes, self.map_dim)
+        ).view(B, self.n_shapes)                            # [B, S]
+
+        # ----- Per-shape count logits: [B, S, K+1]
+        per_shape_logits = self.per_shape_fc(
+            per_shape_maps.view(B * self.n_shapes, self.map_dim)
+        ).view(B, self.n_shapes, self.n_counts)
+
+        if self.mode == 'total':
+            total_logits = self.total_fc(per_shape_scores)  # [B, 1]
+            return per_shape_maps, per_shape_scores, total_logits
+        else:
+            return per_shape_maps, per_shape_scores, per_shape_logits
+        
 
 class RNNClassifier2stream(nn.Module):
     """Main dual-stream network. 
@@ -291,9 +362,13 @@ class RNNClassifier2stream(nn.Module):
         self.head = kwargs['head'] if 'head' in kwargs.keys() else None         # 'relational' | 'counting'
         self.count_K = self.max_num                                             # expected max count K
         if self.head == 'counting':
-            self.n_shapes=9
+            self.n_shapes=self.map_classes+1
+            print(self.n_shapes)
             self.output_size = int(self.count_K) + 1
             print(self.output_size)
+
+        # Counting mode: 'total' or 'per_shape'
+        self.count_mode = kwargs['count_mode'] if 'count_mode' in kwargs.keys() else 'total'
 
         if self.mult:
             embedding_size = 64
@@ -314,31 +389,33 @@ class RNNClassifier2stream(nn.Module):
         self.rnn = RNN(embedding_size, hidden_size, hidden_size, self.act)
         self.drop_layer = nn.Dropout(p=drop)
 
-        self.map_readout = nn.Linear(hidden_size, map_size)
-
-        # if self.par:
-        #     self.notmap = nn.Linear(hidden_size, map_size)
-        #     self.num_readout = nn.Linear(map_size * 2, output_size, bias=False)
-        # else:
-        #     self.num_readout = nn.Linear(map_size, output_size, bias=False)
-
-        #Penultimate (what feeds number head)
-
-        penult_dim = map_size * (2 if self.par else 1)
-        if self.par:
-            self.notmap = nn.Linear(hidden_size, map_size)
-
         # === Number head(s) ===
         if self.head == 'relational':
-            # same as before: logits over min/max classes
+            self.map_readout = nn.Linear(hidden_size, map_size)
+
+            #Penultimate (what feeds number head)
+            penult_dim = map_size * (2 if self.par else 1)
+            if self.par:
+                self.notmap = nn.Linear(hidden_size, map_size)
+            #logits over min/max classes
             self.num_readout = nn.Linear(penult_dim, self.n_classes, bias=False)
         elif self.head == 'counting':
-            # logits over counts 0..K for each of n_shapes → total units n_shapes*(K+1)
-            #print("n_shapes",self.n_shapes)
-            #print("count_K",self.count_K)
-            out_units = self.n_shapes * (int(self.count_K) + 1)
-            #print(out_units)
-            self.num_readout = nn.Linear(penult_dim, out_units, bias=False)
+            # print('Count Mode:', self.count_mode)
+            self.count_head = CountingHead(
+                hidden_dim=hidden_size,
+                map_dim=self.map_size,
+                n_shapes=self.n_shapes, 
+                n_counts=int(self.count_K) + 1, 
+                mode=self.count_mode
+            )
+
+        # elif self.head == 'counting':
+        #     # logits over counts 0..K for each of n_shapes → total units n_shapes*(K+1)
+        #     #print("n_shapes",self.n_shapes)
+        #     #print("count_K",self.count_K)
+        #     out_units = self.n_shapes * (int(self.count_K) + 1)
+        #     #print(out_units)
+        #     self.num_readout = nn.Linear(penult_dim, out_units, bias=False)
         else:
             raise ValueError(f"Unknown head: {self.head}")
 
@@ -350,7 +427,7 @@ class RNNClassifier2stream(nn.Module):
     def forward(self, x, hidden):
         # ----- Stream selection & fusion -----
         if self.train_on == 'both':
-            xy = x[:, :self.xy_size]  # xy coords are first two input features typically unless place code
+            xy = x[:, :self.xy_size]  
             pix = x[:, self.xy_size:]
             
             if not self.mult:
@@ -374,41 +451,70 @@ class RNNClassifier2stream(nn.Module):
         x, hidden = self.rnn(x, hidden)
         x = self.drop_layer(x)
 
-        # Map path
-        map_ = self.map_readout(x)
-        # If not including the map loss term in the optimized objective function, this sigmoid is unncessary and 
-        # contributes to vanishing gradients. Therefore, when use_loss == num, replace with LReLu.
-        if self.sig:
-            sig = self.sigmoid(map_)
-        else:
-            sig = self.LReLU(map_)
-        if self.detach:
-            map_to_pass_on = torch.round(sig.detach()).clone()
-        else:
-            map_to_pass_on = sig
+        # # Map path
+        # map_ = self.map_readout(x)
+        # # If not including the map loss term in the optimized objective function, this sigmoid is unncessary and 
+        # # contributes to vanishing gradients. Therefore, when use_loss == num, replace with LReLu.
+        # if self.sig:
+        #     sig = self.sigmoid(map_)
+        # else:
+        #     sig = self.LReLU(map_)
+        # if self.detach:
+        #     map_to_pass_on = torch.round(sig.detach()).clone()
+        # else:
+        #     map_to_pass_on = sig
 
-        # penult = self.LReLU(self.after_map(map_to_pass_on))
-        # function fom map to number should be linear so best to omit notlinearity, although because you allready applied sigmoid, lrelu wouldn't do anything anyway
-        # penult = self.after_map(map_to_pass_on) # this extra layer probably isn't helping with anything and just increases the number of params
-        if self.par:
-            # Two parallel layers, one to be a map, the other not
-            notmap = self.notmap(x)
-            penult = torch.cat((map_to_pass_on, notmap), dim=1)
-        else:
-            penult = map_to_pass_on
+        # # penult = self.LReLU(self.after_map(map_to_pass_on))
+        # # function fom map to number should be linear so best to omit notlinearity, although because you allready applied sigmoid, lrelu wouldn't do anything anyway
+        # # penult = self.after_map(map_to_pass_on) # this extra layer probably isn't helping with anything and just increases the number of params
+        # if self.par:
+        #     # Two parallel layers, one to be a map, the other not
+        #     notmap = self.notmap(x)
+        #     penult = torch.cat((map_to_pass_on, notmap), dim=1)
+        # else:
+        #     penult = map_to_pass_on
 
-        # Number head forward
-        num_logits_flat = self.num_readout(penult)  # (B, out_units)
+        # # Number head forward
+        # num_logits_flat = self.num_readout(penult)  # (B, out_units)
 
+        # ---- head forward ----
         if self.head == 'relational':
-            # (B, n_classes) — directly consumable by CrossEntropyLoss
-            num = num_logits_flat
-        else:
-            # Reshape long vector → (B, n_shapes, K+1) so each shape has its own (K+1)-way logits.
-            B = num_logits_flat.size(0)
-            K1 = int(self.count_K) + 1
-            num = num_logits_flat.view(B, self.n_shapes, K1)
-            
-            #print("num", num.shape)
+            # Single flattened map for relational path
+            map_ = self.map_readout(x)  # [B, map_size]
+            sig = self.sigmoid(map_) if self.sig else self.LReLU(map_)
+            map_to_pass_on = torch.round(sig.detach()).clone() if self.detach else sig
 
-        return num, pix, map_, hidden, x, penult
+            if self.par:
+                notmap = self.notmap(x)
+                penult = torch.cat((map_to_pass_on, notmap), dim=1)
+            else:
+                penult = map_to_pass_on
+
+            num_logits_flat = self.num_readout(penult)  # (B, out_units)
+            num = num_logits_flat
+            per_shape_scores = None
+
+            return num, pix, map_, hidden, x, penult, per_shape_scores
+
+        # if self.head == 'relational':
+        #     num = num_logits_flat
+
+        # else:
+            # # Reshape long vector → (B, n_shapes, K+1) so each shape has its own (K+1)-way logits.
+            # B = num_logits_flat.size(0)
+            # K1 = int(self.count_K) + 1
+            # num = num_logits_flat.view(B, self.n_shapes, K1)
+            # #print("num", num.shape)
+        
+        else:
+            # Counting path: generate per-shape maps inside the head
+            per_shape_maps, per_shape_scores, num = self.count_head(x)  # maps: [B,S,M]
+            B = x.size(0)
+            map_   = per_shape_maps                     # for BCEWithLogitsLoss (raw logits)
+            penult = per_shape_maps.view(B, -1)         # flattened per-shape maps 
+
+            return num, pix, map_, hidden, x, penult, per_shape_scores
+
+
+
+        # return num, pix, map_, hidden, x, penult

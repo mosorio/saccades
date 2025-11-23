@@ -68,6 +68,7 @@ class Trainer():
         self.current_map_f1 = 0
         self.head_mode = getattr(config, 'head', 'relational')
         self.n_shapes = getattr(config, 'n_shapes', 9)
+        self.count_mode = getattr(config, 'count_mode', 'total') 
         #self.n_shapes = getattr(config, 'max_num', 8)
 
         # Criteria for counting head (per-class CE)
@@ -161,6 +162,8 @@ class Trainer():
     #             acc, pred_counts)
 
     def _countvec_losses_and_metrics(self, pred_num, count_targets):
+        # print('pred_num shape:', pred_num.shape)
+        # print('count_targets shape:', count_targets.shape)
         B, C, K1 = pred_num.shape  # K1 = K+1 counts
         losses = []
         per_class_loss = []
@@ -188,6 +191,85 @@ class Trainer():
 
         return (num_loss_scalar, per_sample_ce, per_class_loss,
                 per_class_acc, acc, pred_counts)
+    
+    def _totalcount_ce_loss_and_acc(self, num_logits, total_targets):
+
+        # print("pred_num.shape:", tuple(num_logits.shape))   # should be (B, K+1)
+        # print("target.shape:", tuple(total_targets.shape))            # should be (B,)
+        # print("target unique:", torch.unique(total_targets).tolist())# should be within [0..K]
+
+        loss = self.criterion_count_ce(num_logits, total_targets)
+        with torch.no_grad():
+            preds = num_logits.argmax(dim=1)
+            acc = (preds == total_targets).float().mean().item() * 100.0
+        return loss, acc, preds
+    
+    # def _per_shape_map_bce_and_f1(self, map_logits, map_targets):
+    #     B, S, M = map_logits.shape
+
+    #     # print('map_logits shape:', map_logits.shape)
+    #     # reuse your existing weighted BCE
+    #     loss = self.criterion_bce_count(
+    #         map_logits.view(B*S, M),
+    #         map_targets.view(B*S, M).float()
+    #     )
+    #     per_elem = self.criterion_bce_count_noreduce(
+    #         map_logits.view(B*S, M),
+    #         map_targets.view(B*S, M).float()
+    #     )  # [B*S, M]
+
+    #     per_shape_loss = per_elem.mean(dim=1).view(B, S).mean(dim=0)  # [S]
+
+    #     # print('per_shape_loss shape:', per_shape_loss.shape)
+
+    #     with torch.no_grad():
+    #         preds = (torch.sigmoid(map_logits) > 0.5).long()
+    #         tp = (preds * map_targets).sum(dim=(0, 2)).float()
+    #         fp = (preds * (1 - map_targets)).sum(dim=(0, 2)).float()
+    #         fn = ((1 - preds) * map_targets).sum(dim=(0, 2)).float()
+    #         precision = tp / (tp + fp + 1e-8)
+    #         recall    = tp / (tp + fn + 1e-8)
+    #         f1_per_s  = 2 * precision * recall / (precision + recall + 1e-8)
+    #         map_f1 = f1_per_s.mean().item() * 100.0
+    #     return loss, map_f1, per_shape_loss
+    
+    def _per_shape_map_bce_and_f1(self, map_logits, map_targets, neg_w = 0.1, focal_gamma = 2.0):
+        B, S, M = map_logits.shape
+
+        # elementwise BCE (no reduction) and reshape to [B,S,M]
+        per_elem = self.criterion_bce_count_noreduce(                  
+            map_logits.view(B * S, M),
+            map_targets.view(B * S, M).float()
+        ).view(B, S, M)  
+
+        present = (map_targets.sum(dim=2) > 0).float()                 # [B,S]  (1 if present, 0 if absent)
+        w_shape = torch.where(present > 0, 1.0, neg_w)                 # [B,S] assigns weight 1.0 to present shapes and a small neg_w to absent shapes.
+        w = w_shape.unsqueeze(-1)                                      # [B,S,1] broadcast across cells
+
+        if focal_gamma and focal_gamma > 0.0:
+            p = torch.sigmoid(map_logits)
+            y = map_targets.float()
+            pt = torch.where(y > 0.5, p, 1.0 - p)                      # [B,S,M] the model’s probability of the true label per cell
+            focal_w = (1.0 - pt).clamp_min(0).pow(focal_gamma)         # [B,S,M] down-weights easy cells (pt≈1) and up-weights hard cells (pt≈0)
+            per_elem = per_elem * focal_w                              # apply focal modulation
+
+        denom = (w.sum() * M).clamp_min(1e-8)                          # total effective weight across all cells
+        loss = (per_elem * w).sum() / denom                            # scalar
+
+        per_shape_weight = (w_shape.sum(dim=0) * M).clamp_min(1e-8)    # [S]
+        per_shape_loss = (per_elem * w).sum(dim=(0, 2)) / per_shape_weight
+
+        with torch.no_grad():
+            preds = (torch.sigmoid(map_logits) > 0.5).long()
+            tp = (preds * map_targets).sum(dim=(0, 2)).float()
+            fp = (preds * (1 - map_targets)).sum(dim=(0, 2)).float()
+            fn = ((1 - preds) * map_targets).sum(dim=(0, 2)).float()
+            precision = tp / (tp + fp + 1e-8)
+            recall    = tp / (tp + fn + 1e-8)
+            f1_per_s  = 2 * precision * recall / (precision + recall + 1e-8)
+            map_f1 = f1_per_s.mean().item() * 100.0
+
+        return loss, map_f1, per_shape_loss
 
 
     def train_network(self):
@@ -266,11 +348,14 @@ class Trainer():
             train_loss[0]           = ep_tr_loss
             train_count_num_loss[0] = tr_num_loss
             train_acc_count[0]      = tr_acc  
-            train_acc_map[0]        = -1
-            train_sh_loss[0]        = -1
-            train_count_map_loss[0] = -1
-            train_full_map_loss[0]  = -1
-            train_dist_map_loss[0]  = -1
+            train_count_map_loss[0] = tr_map_loss                            
+            train_acc_map[0]        = tr_map_f1  
+
+            # train_acc_map[0]        = -1
+            # train_sh_loss[0]        = -1
+            # train_count_map_loss[0] = -1
+            # train_full_map_loss[0]  = -1
+            # train_dist_map_loss[0]  = -1
 
             for ts, test_loader in enumerate(self.test_loaders):
                 te_loss, te_num_loss, te_acc, _, te_map_loss, epoch_df, conf, te_map_f1, te_percls_acc, te_percls_loss = \
@@ -289,18 +374,42 @@ class Trainer():
                 test_loss[ts][0]           = te_loss
                 test_count_num_loss[ts][0] = te_num_loss
                 test_acc_count[ts][0]      = te_acc
-                test_acc_map[ts][0]        = -1
-                test_sh_loss[ts][0]        = -1
-                test_count_map_loss[ts][0] = -1
+
+                test_count_map_loss[ts][0] = te_map_loss                        
+                test_acc_map[ts][0]        = te_map_f1                         
+
                 test_full_map_loss[ts][0]  = -1
                 test_dist_map_loss[ts][0]  = -1
                 confs[0][ts] = conf
 
-            print(f'Before Training [COUNTING]: Train Loss={train_count_num_loss[0]:.4f}  Accuracy={train_acc_count[0]:.2f}%')
-            print(f'Test OOD (Pairs/Lum/Both) Loss='
-                f'{test_count_num_loss[1][0]:.4f}/{test_count_num_loss[2][0]:.4f}/{test_count_num_loss[3][0]:.4f} '
-                f' Accuracy='
-                f'{test_acc_count[1][0]:.2f}%/{test_acc_count[2][0]:.2f}%/{test_acc_count[3][0]:.2f}%')
+                # test_acc_map[ts][0]        = -1
+                # test_sh_loss[ts][0]        = -1
+                # test_count_map_loss[ts][0] = -1
+                # test_full_map_loss[ts][0]  = -1
+                # test_dist_map_loss[ts][0]  = -1
+                # confs[0][ts] = conf
+
+            # print(f'Before Training [COUNTING]: Train Loss={train_count_num_loss[0]:.4f}  Accuracy={train_acc_count[0]:.2f}%')
+            # print(f'Test OOD (Pairs/Lum/Both) Loss='
+            #     f'{test_count_num_loss[1][0]:.4f}/{test_count_num_loss[2][0]:.4f}/{test_count_num_loss[3][0]:.4f} '
+            #     f' Accuracy='
+            #     f'{test_acc_count[1][0]:.2f}%/{test_acc_count[2][0]:.2f}%/{test_acc_count[3][0]:.2f}%')
+            
+            print(f'Before Training [COUNTING]: Train NumLoss={train_count_num_loss[0]:.4f}  '
+                f'Count Acc={train_acc_count[0]:.2f}%  MapLoss={train_count_map_loss[0]:.4f}  MapF1={train_acc_map[0]:.2f}%')  
+            if n_test_sets >= 1:  
+                print(f'Val: NumLoss={test_count_num_loss[0][0]:.4f}  Acc={test_acc_count[0][0]:.2f}%  '
+                    f'MapLoss={test_count_map_loss[0][0]:.4f}  MapF1={test_acc_map[0][0]:.2f}%')  
+            if n_test_sets >= 4:  
+                print(f'Test OOD (Pairs/Lum/Both) NumLoss='
+                    f'{test_count_num_loss[1][0]:.4f}/{test_count_num_loss[2][0]:.4f}/{test_count_num_loss[3][0]:.4f}  '
+                    f'Acc='
+                    f'{test_acc_count[1][0]:.2f}%/{test_acc_count[2][0]:.2f}%/{test_acc_count[3][0]:.2f}%  '
+                    f'MapLoss='
+                    f'{test_count_map_loss[1][0]:.4f}/{test_count_map_loss[2][0]:.4f}/{test_count_map_loss[3][0]:.4f}  ' 
+                    f'MapF1='
+                    f'{test_acc_map[1][0]:.2f}%/{test_acc_map[2][0]:.2f}%/{test_acc_map[3][0]:.2f}%')  
+
 
         else:
             # Original relational path: evaluate TRAIN and all TEST sets
@@ -356,18 +465,6 @@ class Trainer():
         
         tr_accuracy = 0
         for ep in range(1, n_epochs + 1):
-            if tr_accuracy > threshold:
-                savethisep = True
-                threshold += 25 # This will be 51,76, and then 101 so we'll save at 51 and 76
-            if savethisep:
-                # Save confusion
-                np.save(f'{results_dir}/confusion_at_{threshold-26}_{base_name}', confs[ep - 1])
-                if config.save_act and savethisep:
-                    print(f'Saving activations at {threshold-26}% accuracy...')
-                    self.save_activations(self.model, self.test_loaders, f'{base_name}_acc{threshold-26}', config)
-                savethisep = False
-            epoch_timer = Timer()
-
     
             if counting:
                 ep_tr_loss, tr_num_loss, tr_acc, _, tr_map_loss, tr_map_f1, percls_acc, percls_loss = self.train(self.train_loader, ep)
@@ -375,11 +472,15 @@ class Trainer():
                 train_loss[ep]           = ep_tr_loss
                 train_count_num_loss[ep] = tr_num_loss
                 train_acc_count[ep]      = tr_acc
-                train_acc_map[ep]        = -1
-                train_sh_loss[ep]        = -1
-                train_count_map_loss[ep] = -1
-                train_full_map_loss[ep]  = -1
-                train_dist_map_loss[ep]  = -1
+
+                train_count_map_loss[ep] = tr_map_loss                     
+                train_acc_map[ep]        = tr_map_f1   
+
+                # train_acc_map[ep]        = -1
+                # train_sh_loss[ep]        = -1
+                # train_count_map_loss[ep] = -1
+                # train_full_map_loss[ep]  = -1
+                # train_dist_map_loss[ep]  = -1
 
                 # Evaluate all TEST sets
                 for ts, test_loader in enumerate(self.test_loaders):
@@ -397,22 +498,54 @@ class Trainer():
 
                     test_count_num_loss[ts][ep] = te_num_loss
                     test_acc_count[ts][ep]      = te_acc
-                    test_acc_map[ts][ep]        = -1
-                    test_count_map_loss[ts][ep] = -1
-                    test_full_map_loss[ts][ep]  = -1
+
+                    test_count_map_loss[ts][ep] = te_map_loss              
+                    test_acc_map[ts][ep]        = te_map_f1                 
                     test_loss[ts][ep]           = te_loss
                     test_sh_loss[ts][ep]        = -1
                     confs[ep][ts] = conf
 
+                    # test_acc_map[ts][ep]        = -1
+                    # test_count_map_loss[ts][ep] = -1
+                    # test_full_map_loss[ts][ep]  = -1
+                    # test_loss[ts][ep]           = te_loss
+                    # test_sh_loss[ts][ep]        = -1
+                    # confs[ep][ts] = conf
+
+                # print(f'Epoch {ep}. LR={self.optimizer.param_groups[0]["lr"]:.4}')
+                # print(f'Train Loss={train_loss[ep]:.4f}  Accuracy={train_acc_count[ep]:.2f}%')
+                # print(f'Test Val Loss={test_count_num_loss[0][ep]:.4f}  Accuracy={test_acc_count[0][ep]:.2f}%')
+                # print(f'Test OOD (Pairs/Lum/Both) Loss='
+                #     f'{test_count_num_loss[1][ep]:.4f}/{test_count_num_loss[2][ep]:.4f}/{test_count_num_loss[3][ep]:.4f} '
+                #     f' Accuracy='
+                #     f'{test_acc_count[1][ep]:.2f}%/{test_acc_count[2][ep]:.2f}%/{test_acc_count[3][ep]:.2f}%')
+
                 print(f'Epoch {ep}. LR={self.optimizer.param_groups[0]["lr"]:.4}')
-                print(f'Train Loss={train_loss[ep]:.4f}  Accuracy={train_acc_count[ep]:.2f}%')
-                print(f'Test Val Loss={test_count_num_loss[0][ep]:.4f}  Accuracy={test_acc_count[0][ep]:.2f}%')
-                print(f'Test OOD (Pairs/Lum/Both) Loss='
-                    f'{test_count_num_loss[1][ep]:.4f}/{test_count_num_loss[2][ep]:.4f}/{test_count_num_loss[3][ep]:.4f} '
-                    f' Accuracy='
-                    f'{test_acc_count[1][ep]:.2f}%/{test_acc_count[2][ep]:.2f}%/{test_acc_count[3][ep]:.2f}%')
+                print(f'Train:  Loss={train_loss[ep]:.4f}  CountAcc={train_acc_count[ep]:.2f}%  '
+                    f'NumLoss={train_count_num_loss[ep]:.4f}  MapLoss={train_count_map_loss[ep]:.4f}  MapF1={train_acc_map[ep]:.2f}%') 
+                if n_test_sets >= 1:  
+                    print(f'Val:    NumLoss={test_count_num_loss[0][ep]:.4f}  Acc={test_acc_count[0][ep]:.2f}%  '
+                        f'MapLoss={test_count_map_loss[0][ep]:.4f}  MapF1={test_acc_map[0][ep]:.2f}%') 
+                if n_test_sets >= 4:  
+                    print(f'OOD:    NumLoss={test_count_num_loss[1][ep]:.4f}/{test_count_num_loss[2][ep]:.4f}/{test_count_num_loss[3][ep]:.4f}  '
+                        f'Acc={test_acc_count[1][ep]:.2f}%/{test_acc_count[2][ep]:.2f}%/{test_acc_count[3][ep]:.2f}%  '
+                        f'MapLoss={test_count_map_loss[1][ep]:.4f}/{test_count_map_loss[2][ep]:.4f}/{test_count_map_loss[3][ep]:.4f}  '  
+                        f'MapF1={test_acc_map[1][ep]:.2f}%/{test_acc_map[2][ep]:.2f}%/{test_acc_map[3][ep]:.2f}%') 
+
 
             else:
+
+                if tr_accuracy > threshold:
+                    savethisep = True
+                    threshold += 25 # This will be 51,76, and then 101 so we'll save at 51 and 76
+                if savethisep:
+                    # Save confusion
+                    np.save(f'{results_dir}/confusion_at_{threshold-26}_{base_name}', confs[ep - 1])
+                    if config.save_act and savethisep:
+                        print(f'Saving activations at {threshold-26}% accuracy...')
+                        self.save_activations(self.model, self.test_loaders, f'{base_name}_acc{threshold-26}', config)
+                    savethisep = False
+                epoch_timer = Timer()
 
                 ###### TRAIN ######
                 ep_tr_loss, ep_tr_num_loss, tr_accuracy, ep_tr_sh_loss, ep_tr_map_loss, map_acc = self.train(self.train_loader, ep)
@@ -729,6 +862,9 @@ class Trainer():
             percls_loss_sum = torch.zeros(C, dtype=torch.float32)
             acc_sum = 0.0
             n_batches = 0
+            epoch_num_loss, epoch_map_loss, epoch_acc_list, map_f1_list = [], [], [], []  
+            percls_losses_accum = []                                                      
+            epoch_df, conf = pd.DataFrame(), None                                         
 
         for i, batch in enumerate(loader):
             (ind, input, target, num_dist, all_loc, shape_label, pass_count, *extra) = batch
@@ -738,8 +874,16 @@ class Trainer():
             # forward all glimpses, use last-step outputs (as before)
             hidden = self.model.initHidden(input.shape[0]).to(device)
             n_glimpses = input.shape[1]
+            last_pred_num   = None                                            
+            last_map_logits = None                                            
+
             for t in range(n_glimpses):
-                pred_num, pred_shape, map, hidden, _, _= self.model(input[:, t, :], hidden)
+                pred_num, pred_shape, map, hidden, _, _, _= self.model(input[:, t, :], hidden)
+                # print('last_pred_num:', pred_num)
+                # print('last_map_logits:', map)
+                last_pred_num   = pred_num                                    
+                last_map_logits = map                                 
+
                 shape_loss = 0
                 if config.learn_shape:
                     shape_loss_mse = criterion_mse(pred_shape, shape_label[:, t, :])#*10
@@ -748,35 +892,59 @@ class Trainer():
                 
 
             if counting:
-                count_targets = target.to(device)  # (B, C) ints in 0..K, from loader
-                (num_loss_scalar, per_sample_ce, per_class_loss, per_class_acc,
-                acc, pred_counts) = self._countvec_losses_and_metrics(pred_num, count_targets)
+                # count_targets = target.to(device)  # (B, C) ints in 0..K, from loader
+                # (num_loss_scalar, per_sample_ce, per_class_loss, per_class_acc,
+                # acc, pred_counts) = self._countvec_losses_and_metrics(last_pred_num, count_targets)
 
-                # epoch scalars
-                epoch_loss += float(num_loss_scalar.item())
-                percls_acc_sum  += per_class_acc.cpu()
-                percls_loss_sum += per_class_loss.cpu()
-                acc_sum   += acc
-                n_batches += 1
+                # MAP BCE
+                map_loss, map_f1, per_shape_loss = self._per_shape_map_bce_and_f1(last_map_logits, all_loc) 
 
-                # strict per-sample correctness (exact count vector match)
-                strict_correct = (pred_counts == count_targets).all(dim=1).cpu().numpy()  # (B,)
-                strict_correct_sum += strict_correct.sum()
+                # print('map_loss', map_loss)
+                # print('per_shape_loss', per_shape_loss)
+
+                # NUM CE
+                if self.count_mode=='total':  # total [B]                          
+                    num_loss, acc, pred_counts = self._totalcount_ce_loss_and_acc(last_pred_num, target.to(device).long()) 
+                    strict_correct = pred_counts.eq(target.to(device)).cpu().numpy()    # shape [B]
+                elif self.count_mode=='per_shape':  # per-shape [B,S]                                         
+                    (num_loss, per_sample_ce, per_class_loss,
+                    per_class_acc, acc_ratio, pred_counts) = self._countvec_losses_and_metrics(last_pred_num, target.to(device).long()) 
+                    acc = acc_ratio * 100.0  
+
+                    # strict per-sample correctness (exact count vector match)
+                    strict_correct = (pred_counts == target.to(device)).all(dim=1).cpu().numpy()  # (B,)
+                    strict_correct_sum += strict_correct.sum()
+                                                          
+
+                epoch_num_loss.append(num_loss.item())                            
+                epoch_map_loss.append(map_loss.item())                               
+                epoch_acc_list.append(acc)                            
+                map_f1_list.append(map_f1)                                
+                percls_losses_accum.append(per_shape_loss.detach().cpu())         
+
+                # # epoch scalars
+                # epoch_loss += float(num_loss_scalar.item())
+                # percls_acc_sum  += per_class_acc.cpu()
+                # percls_loss_sum += per_class_loss.cpu()
+                # acc_sum   += acc
+                # n_batches += 1
 
                 # ---- batch_results ----
                 batch_results = pd.DataFrame()
                 #batch_results['pass count']      = pass_count.detach().cpu().numpy()
                 batch_results['correct']         = strict_correct.astype(bool)
-                batch_results['predicted']       = -1     # keep column for compatibility
-                batch_results['true']            = -1
-                batch_results['loss']            = per_sample_ce.detach().cpu().numpy()   # per-sample CE
-                batch_results['full map loss']   = -1
-                batch_results['count map loss']  = -1
-                batch_results['num loss']        = per_sample_ce.detach().cpu().numpy()
+                batch_results['predicted']       = pred_counts.detach().cpu().tolist()
+                batch_results['true']            = target.to(device).detach().cpu().tolist()
+                # batch_results['loss']            = per_sample_ce.detach().cpu().numpy()   # per-sample CE
+                # batch_results['full map loss']   = -1
+                # batch_results['count map loss']  = -1
+                batch_results['shape map loss']  = float(per_shape_loss.mean().item())
+                batch_results['full map loss']   = map_loss.detach().cpu().numpy()
+                batch_results['num loss']        = num_loss.detach().cpu().numpy() # per-sample CE in per_shape case
                 batch_results['shape loss']      = -1
                 batch_results['epoch']           = ep
-                batch_results['pred_counts']     = pred_counts.detach().cpu().tolist()
-                batch_results['true_counts']     = count_targets.detach().cpu().tolist()
+                # batch_results['pred_counts']     = pred_counts.detach().cpu().tolist()
+                # batch_results['true_counts']     = target.to(device).detach().cpu().tolist()
 
                 test_results = pd.concat((test_results, batch_results), ignore_index=True)
 
@@ -837,17 +1005,27 @@ class Trainer():
 
         # ---- finalize epoch metrics ----
         if counting:
-            epoch_loss  /= max(1, n_batches)
-            percls_acc   = (percls_acc_sum  / max(1, n_batches)).numpy()
-            percls_loss  = (percls_loss_sum / max(1, n_batches)).numpy()
-            acc    = 100.0 * (acc_sum / max(1, n_batches))
-            strict_acc   = 100.0 * (strict_correct_sum / len(loader.dataset))
-            map_epoch_loss = (-1, -1)
-            map_f1 = -1
-            # Return shape mirrors the relational path where possible:
-            # (epoch_loss, num_epoch_loss, accuracy, shape_epoch_loss, map_epoch_loss, test_results, conf, map_f1)
-            return (epoch_loss, epoch_loss, strict_acc, -1, map_epoch_loss, test_results, None, map_f1,
-                    percls_acc, percls_loss)
+
+            ep_loss     = (np.mean(epoch_num_loss) + np.mean(epoch_map_loss))         
+            ep_num_loss = np.mean(epoch_num_loss)                                     
+            ep_map_loss = np.mean(epoch_map_loss)                                     
+            ep_acc      = np.mean(epoch_acc_list)                                     
+            map_f1_mean = float(np.mean(map_f1_list)) if map_f1_list else 0.0         
+            percls_loss = torch.stack([torch.as_tensor(x) for x in percls_losses_accum]).mean(dim=0).numpy()  
+
+            return ep_loss, ep_num_loss, ep_acc, None, ep_map_loss, epoch_df, conf, map_f1_mean, None, percls_loss  
+        
+            # epoch_loss  /= max(1, n_batches)
+            # percls_acc   = (percls_acc_sum  / max(1, n_batches)).numpy()
+            # percls_loss  = (percls_loss_sum / max(1, n_batches)).numpy()
+            # acc    = 100.0 * (acc_sum / max(1, n_batches))
+            # strict_acc   = 100.0 * (strict_correct_sum / len(loader.dataset))
+            # map_epoch_loss = (-1, -1)
+            # map_f1 = -1
+            # # Return shape mirrors the relational path where possible:
+            # # (epoch_loss, num_epoch_loss, accuracy, shape_epoch_loss, map_epoch_loss, test_results, conf, map_f1)
+            # return (epoch_loss, epoch_loss, strict_acc, -1, map_epoch_loss, test_results, None, map_f1,
+            #         percls_acc, percls_loss)
 
         else:
             accuracy = 100. * (n_correct/len(loader.dataset))
@@ -999,6 +1177,8 @@ class Trainer():
             percls_loss_sum = torch.zeros(C, dtype=torch.float32)
             acc_sum = 0.0
             n_batches = 0
+            epoch_num_loss, epoch_map_loss, epoch_acc_list, map_f1_list = [], [], [], []  
+            percls_losses_accum = []                                                      
 
         for i, batch in enumerate(loader):
             (ind, input, target, num_dist, locations, shape_label, pass_count, *extra) = batch
@@ -1017,26 +1197,52 @@ class Trainer():
             input_dim = input.shape[0]
             self.model.zero_grad()
             hidden = self.model.initHidden(input_dim).to(config.device)
+            last_pred_num   = None                                           
+            last_map_logits = None                                           
 
             n_glimpses = input.shape[1]
             for t in range(n_glimpses):
-                pred_num, pred_shape, map, hidden, _, _ = self.model(input[:, t, :], hidden) # pred_num has shape (B, n_shapes, K+1) (logits).
+                pred_num, pred_shape, map, hidden, _, _, _= self.model(input[:, t, :], hidden) # pred_num has shape (B, n_shapes, K+1) (logits).
+                last_pred_num   = pred_num                                  
+                last_map_logits = map 
                 
             if counting:
-                count_targets = target.to(config.device)  # shape (B, n_shapes), values in 0..K
-                (num_loss_scalar, per_sample_ce, per_class_loss, per_class_acc,
-                acc, pred_counts) = self._countvec_losses_and_metrics(pred_num, count_targets)
+                # --- MAP loss: BCE on per-shape maps [B,S,M] ---
+                map_loss, map_f1, per_shape_loss = self._per_shape_map_bce_and_f1(last_map_logits, locations)
 
-                loss = num_loss_scalar                    
+                # --- NUM loss: CE on counts ---
+                if self.count_mode == 'total':  # total counts [B]                     
+                    num_loss, acc, _ = self._totalcount_ce_loss_and_acc(last_pred_num, target.to(config.device).long()) 
+                elif self.count_mode == 'per_shape':  # per-shape counts [B,S]                                 
+                    (num_loss, per_sample_ce, per_class_loss,
+                    per_class_acc, acc_ratio, pred_counts) = self._countvec_losses_and_metrics(last_pred_num, target.to(config.device).long()) 
+                    acc = acc_ratio * 100.0  
+
+                # count_targets = target.to(config.device)  # shape (B, n_shapes), values in 0..K
+                # (num_loss_scalar, per_sample_ce, per_class_loss, per_class_acc,
+                # acc, pred_counts) = self._countvec_losses_and_metrics(pred_num, count_targets)
+
+                # loss = num_loss + map_loss  # Sum both losses           
+                # loss.backward()
+                # nn.utils.clip_grad_norm_(self.model.parameters(), 2)
+                # self.optimizer.step()
+
+                loss = num_loss + map_loss    # Sum both losses                                   
+                self.optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), 2)
                 self.optimizer.step()
 
-                epoch_loss += loss.item()
-                percls_acc_sum  += per_class_loss.detach().cpu()
-                percls_loss_sum += per_class_loss.detach().cpu()
-                acc_sum += acc
-                n_batches += 1
+                epoch_num_loss.append(num_loss.item())                               
+                epoch_map_loss.append(map_loss.item())                               
+                epoch_acc_list.append(acc)                                           
+                map_f1_list.append(map_f1)                                           
+                percls_losses_accum.append(per_shape_loss.detach().cpu())            
+
+                # epoch_loss += loss.item()
+                # percls_acc_sum  += per_class_loss.detach().cpu()
+                # percls_loss_sum += per_class_loss.detach().cpu()
+                # acc_sum += acc
+                # n_batches += 1
 
             else:
                 losses, pred = self.get_losses(pred_num, target.to(config.device), map, locations, ep, noreduce)
@@ -1065,13 +1271,25 @@ class Trainer():
                     self.batch_confusion[ep-1, i] = conf_tr
 
         if counting:
-            epoch_loss /= max(1, n_batches)
-            percls_acc  = (percls_acc_sum / max(1, n_batches)).numpy()
-            percls_loss = (percls_loss_sum / max(1, n_batches)).numpy()
-            acc = 100.0 * (acc_sum / max(1, n_batches))
-            map_epoch_loss = (-1, -1)
-            map_f1 = -1
-            return epoch_loss, float(num_loss_scalar.detach().cpu().item()), acc, -1, map_epoch_loss, map_f1, percls_acc, percls_loss
+            if self.scheduler is not None:
+                self.scheduler.step()
+            ep_loss     = (np.mean(epoch_num_loss) + np.mean(epoch_map_loss))         
+            ep_num_loss = np.mean(epoch_num_loss)                                    
+            ep_map_loss = np.mean(epoch_map_loss)                                    
+            ep_acc      = np.mean(epoch_acc_list)                                     
+            map_f1_mean = float(np.mean(map_f1_list)) if map_f1_list else 0.0         
+            percls_loss = torch.stack([torch.as_tensor(x) for x in percls_losses_accum]).mean(dim=0).numpy()  
+
+            return ep_loss, ep_num_loss, ep_acc, None, ep_map_loss, map_f1_mean, None, percls_loss 
+
+            # epoch_loss /= max(1, n_batches)
+            # percls_acc  = (percls_acc_sum / max(1, n_batches)).numpy()
+            # percls_loss = (percls_loss_sum / max(1, n_batches)).numpy()
+            # acc = 100.0 * (acc_sum / max(1, n_batches))
+            # map_epoch_loss = (-1, -1)
+            # map_f1 = -1
+            # return epoch_loss, float(num_loss_scalar.detach().cpu().item()), acc, -1, map_epoch_loss, map_f1, percls_acc, percls_loss
+
         else:
             if self.scheduler is not None:
                 self.scheduler.step()
