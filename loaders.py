@@ -124,9 +124,10 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
         dist_num = torch.zeros_like(count_num).long().to(config.device)
     elif config.head == 'counting' and config.count_mode =='per_shape':
         print('Using shape_hist as count target')
-        count_num = torch.tensor(dataset['shape_hist'].values[:,:len(config.train_shapes)+1]).long().to(config.device) #[:,1:config.max_num+2]
+        count_num = torch.tensor(dataset['shape_hist'].values[:,1:len(config.train_shapes)+1]).long().to(config.device) #[:,1:config.max_num+2]
         dist_num = torch.zeros_like(count_num).long().to(config.device)
         # print("count_num", count_num[:10])
+        # print("count_num shape:", count_num.shape)
     # elif config.task_type == 'count':
     #     count_num = torch.tensor(dataset['numerosity_target'].values).long().to(config.device)
     #     dist_num = torch.zeros_like(count_num).long().to(config.device)
@@ -195,13 +196,15 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
     if config.head == 'counting':
         print('Using one-hot version of locations_class_index as count map target')
         loc_idx = torch.tensor(dataset['locations_class_index'].values).long()  # [B, grid]
-        n_shapes = (loc_idx.max().item() + 1)
+        # print('loc_idx:', loc_idx[0])
+        n_shapes = (loc_idx.max().item())
         mask = (loc_idx > 0)                                   # True where a shape exists
         shape_ids = torch.clamp(loc_idx - 1, min=0)            # shift so shape 1→0, etc.
         one_hot = torch.nn.functional.one_hot(shape_ids, num_classes=n_shapes).float()  # [B, grid, n_shapes]
         one_hot *= mask.unsqueeze(-1).float()                          # zero out background
         per_shape_map = one_hot.permute(0, 2, 1)                       # [B, n_shapes, grid]
         count_loc = per_shape_map          # use per-shape mask as the map target
+        # print('count_loc:', count_loc[0])
         all_loc = per_shape_map.clone()   
 
     elif config.task_type in ['min', 'max']:
