@@ -864,7 +864,7 @@ class Trainer():
             n_batches = 0
             epoch_num_loss, epoch_map_loss, epoch_acc_list, map_f1_list = [], [], [], []  
             percls_losses_accum = []                                                      
-            epoch_df, conf = pd.DataFrame(), None                                         
+            #epoch_df, conf = pd.DataFrame(), None                                         
 
         for i, batch in enumerate(loader):
             (ind, input, target, num_dist, all_loc, shape_label, pass_count, *extra) = batch
@@ -946,7 +946,10 @@ class Trainer():
                 # batch_results['pred_counts']     = pred_counts.detach().cpu().tolist()
                 # batch_results['true_counts']     = target.to(device).detach().cpu().tolist()
 
-                test_results = pd.concat((test_results, batch_results), ignore_index=True)
+                test_results = pd.concat((test_results, batch_results))
+
+                # if self.config.use_loss != 'map':
+                #     confusion_matrix = self.update_confusion(target, pred_counts, num_dist, confusion_matrix)
 
             else:
                 # ===== RELATIONAL HEAD =====
@@ -1013,7 +1016,9 @@ class Trainer():
             map_f1_mean = float(np.mean(map_f1_list)) if map_f1_list else 0.0         
             percls_loss = torch.stack([torch.as_tensor(x) for x in percls_losses_accum]).mean(dim=0).numpy()  
 
-            return ep_loss, ep_num_loss, ep_acc, None, ep_map_loss, epoch_df, conf, map_f1_mean, None, percls_loss  
+            return (ep_loss, ep_num_loss, ep_acc, None, 
+                    ep_map_loss, test_results, None, map_f1_mean, 
+                    None, percls_loss)
         
             # epoch_loss  /= max(1, n_batches)
             # percls_acc   = (percls_acc_sum  / max(1, n_batches)).numpy()
