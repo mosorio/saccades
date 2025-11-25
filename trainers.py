@@ -204,60 +204,23 @@ class Trainer():
             acc = (preds == total_targets).float().mean().item() * 100.0
         return loss, acc, preds
     
-    # def _per_shape_map_bce_and_f1(self, map_logits, map_targets):
-    #     B, S, M = map_logits.shape
-
-    #     # print('map_logits shape:', map_logits.shape)
-    #     # reuse your existing weighted BCE
-    #     loss = self.criterion_bce_count(
-    #         map_logits.view(B*S, M),
-    #         map_targets.view(B*S, M).float()
-    #     )
-    #     per_elem = self.criterion_bce_count_noreduce(
-    #         map_logits.view(B*S, M),
-    #         map_targets.view(B*S, M).float()
-    #     )  # [B*S, M]
-
-    #     per_shape_loss = per_elem.mean(dim=1).view(B, S).mean(dim=0)  # [S]
-
-    #     # print('per_shape_loss shape:', per_shape_loss.shape)
-
-    #     with torch.no_grad():
-    #         preds = (torch.sigmoid(map_logits) > 0.5).long()
-    #         tp = (preds * map_targets).sum(dim=(0, 2)).float()
-    #         fp = (preds * (1 - map_targets)).sum(dim=(0, 2)).float()
-    #         fn = ((1 - preds) * map_targets).sum(dim=(0, 2)).float()
-    #         precision = tp / (tp + fp + 1e-8)
-    #         recall    = tp / (tp + fn + 1e-8)
-    #         f1_per_s  = 2 * precision * recall / (precision + recall + 1e-8)
-    #         map_f1 = f1_per_s.mean().item() * 100.0
-    #     return loss, map_f1, per_shape_loss
-    
-    def _per_shape_map_bce_and_f1(self, map_logits, map_targets, neg_w = 0.1, focal_gamma = 2.0):
+    def _per_shape_map_bce_and_f1(self, map_logits, map_targets):
         B, S, M = map_logits.shape
 
-        # elementwise BCE (no reduction) and reshape to [B,S,M]
-        per_elem = self.criterion_bce_count_noreduce(                  
-            map_logits.view(B * S, M),
-            map_targets.view(B * S, M).float()
-        ).view(B, S, M)  
+        # print('map_logits shape:', map_logits.shape)
+        # reuse your existing weighted BCE
+        loss = self.criterion_bce_count(
+            map_logits.view(B*S, M),
+            map_targets.view(B*S, M).float()
+        )
+        per_elem = self.criterion_bce_count_noreduce(
+            map_logits.view(B*S, M),
+            map_targets.view(B*S, M).float()
+        )  # [B*S, M]
 
-        present = (map_targets.sum(dim=2) > 0).float()                 # [B,S]  (1 if present, 0 if absent)
-        w_shape = torch.where(present > 0, 1.0, neg_w)                 # [B,S] assigns weight 1.0 to present shapes and a small neg_w to absent shapes.
-        w = w_shape.unsqueeze(-1)                                      # [B,S,1] broadcast across cells
+        per_shape_loss = per_elem.mean(dim=1).view(B, S).mean(dim=0)  # [S]
 
-        if focal_gamma and focal_gamma > 0.0:
-            p = torch.sigmoid(map_logits)
-            y = map_targets.float()
-            pt = torch.where(y > 0.5, p, 1.0 - p)                      # [B,S,M] the model’s probability of the true label per cell
-            focal_w = (1.0 - pt).clamp_min(0).pow(focal_gamma)         # [B,S,M] down-weights easy cells (pt≈1) and up-weights hard cells (pt≈0)
-            per_elem = per_elem * focal_w                              # apply focal modulation
-
-        denom = (w.sum() * M).clamp_min(1e-8)                          # total effective weight across all cells
-        loss = (per_elem * w).sum() / denom                            # scalar
-
-        per_shape_weight = (w_shape.sum(dim=0) * M).clamp_min(1e-8)    # [S]
-        per_shape_loss = (per_elem * w).sum(dim=(0, 2)) / per_shape_weight
+        # print('per_shape_loss shape:', per_shape_loss.shape)
 
         with torch.no_grad():
             preds = (torch.sigmoid(map_logits) > 0.5).long()
@@ -268,8 +231,45 @@ class Trainer():
             recall    = tp / (tp + fn + 1e-8)
             f1_per_s  = 2 * precision * recall / (precision + recall + 1e-8)
             map_f1 = f1_per_s.mean().item() * 100.0
-
         return loss, map_f1, per_shape_loss
+    
+    # def _per_shape_map_bce_and_f1(self, map_logits, map_targets, neg_w = 0.1, focal_gamma = 2.0):
+    #     B, S, M = map_logits.shape
+
+    #     # elementwise BCE (no reduction) and reshape to [B,S,M]
+    #     per_elem = self.criterion_bce_count_noreduce(                  
+    #         map_logits.view(B * S, M),
+    #         map_targets.view(B * S, M).float()
+    #     ).view(B, S, M)  
+
+    #     present = (map_targets.sum(dim=2) > 0).float()                 # [B,S]  (1 if present, 0 if absent)
+    #     w_shape = torch.where(present > 0, 1.0, neg_w)                 # [B,S] assigns weight 1.0 to present shapes and a small neg_w to absent shapes.
+    #     w = w_shape.unsqueeze(-1)                                      # [B,S,1] broadcast across cells
+
+    #     if focal_gamma and focal_gamma > 0.0:
+    #         p = torch.sigmoid(map_logits)
+    #         y = map_targets.float()
+    #         pt = torch.where(y > 0.5, p, 1.0 - p)                      # [B,S,M] the model’s probability of the true label per cell
+    #         focal_w = (1.0 - pt).clamp_min(0).pow(focal_gamma)         # [B,S,M] down-weights easy cells (pt≈1) and up-weights hard cells (pt≈0)
+    #         per_elem = per_elem * focal_w                              # apply focal modulation
+
+    #     denom = (w.sum() * M).clamp_min(1e-8)                          # total effective weight across all cells
+    #     loss = (per_elem * w).sum() / denom                            # scalar
+
+    #     per_shape_weight = (w_shape.sum(dim=0) * M).clamp_min(1e-8)    # [S]
+    #     per_shape_loss = (per_elem * w).sum(dim=(0, 2)) / per_shape_weight
+
+    #     with torch.no_grad():
+    #         preds = (torch.sigmoid(map_logits) > 0.5).long()
+    #         tp = (preds * map_targets).sum(dim=(0, 2)).float()
+    #         fp = (preds * (1 - map_targets)).sum(dim=(0, 2)).float()
+    #         fn = ((1 - preds) * map_targets).sum(dim=(0, 2)).float()
+    #         precision = tp / (tp + fp + 1e-8)
+    #         recall    = tp / (tp + fn + 1e-8)
+    #         f1_per_s  = 2 * precision * recall / (precision + recall + 1e-8)
+    #         map_f1 = f1_per_s.mean().item() * 100.0
+
+    #     return loss, map_f1, per_shape_loss
 
 
     def train_network(self):
@@ -1232,7 +1232,7 @@ class Trainer():
                 # nn.utils.clip_grad_norm_(self.model.parameters(), 2)
                 # self.optimizer.step()
 
-                loss = num_loss + map_loss    # Sum both losses                                   
+                loss = map_loss    # Sum both losses     num_loss + map_loss                              
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
