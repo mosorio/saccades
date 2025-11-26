@@ -961,7 +961,10 @@ class Trainer():
                 # batch_results['count map loss']  = -1
                 # batch_results['shape map loss']  = float(per_shape_loss.mean().item())
                 per_shape_vals = per_shape_loss.detach().cpu().tolist()  # shape [S]
-                batch_results['shape map loss'] = per_shape_vals         # stores the whole vector
+                #batch_results['shape map loss'] = per_shape_vals         # stores the whole vector
+                for s, val in enumerate(per_shape_vals):
+                    batch_results[f'shape_map_loss_{s}'] = val
+
 
                 batch_results['full map loss']   = map_loss.detach().cpu().numpy()
                 batch_results['num loss']        = num_loss.detach().cpu().numpy() # per-sample CE in per_shape case
