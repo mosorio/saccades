@@ -118,7 +118,7 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
         num_field = 'numerosity_min' if config.task_type == 'min' else 'numerosity_max'
         count_num = torch.tensor(dataset[num_field].values).long().to(config.device)
         dist_num = torch.zeros_like(count_num).long().to(config.device)
-    elif config.head == 'counting' and config.count_mode =='total':
+    elif config.count_mode =='total': # config.head == 'counting' and
         print('Using numerosity_target as count target')
         count_num = torch.tensor(dataset['numerosity_target'].values).long().to(config.device)
         dist_num = torch.zeros_like(count_num).long().to(config.device)
@@ -195,7 +195,7 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
     shape_label = torch.tensor(shape_array).float().to(config.device)
 
     ### MAP LABEL ###
-    true_loc = torch.tensor(dataset['locations']).float().to(config.device)
+    # true_loc = torch.tensor(dataset['locations']).float().to(config.device)
     if config.head == 'counting':
         print('Using one-hot version of locations_class_index as count map target')
         loc_idx = torch.tensor(dataset['locations_class_index'].values).long()  # [B, grid]
