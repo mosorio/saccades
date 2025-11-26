@@ -21,6 +21,17 @@ from utils import Timer
 import json
 from pathlib import Path
 
+# def set_device(config):
+#     """Specify the compute resource (CUDA, MPS, or CPU) to train model with."""
+#     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+#         device = torch.device("mps")
+#     elif torch.cuda.is_available() and not config.no_cuda:
+#         device = torch.device(f"cuda:{config.gpu}")
+#     else:
+#         device = torch.device("cpu")
+#     print(f'Using device: {device}')
+#     return device
+
 def set_device(config):
     """Specify the compute resource (CUDA or CPU) to train model with"""
     use_cuda = (not config.no_cuda) and torch.cuda.is_available()
@@ -74,7 +85,12 @@ def main(config):
     print(f'model file: {model_file_name}')
 
     # Organize and save results
-    train_losses, train_accs, test_losses, test_accs, confs, test_results = results
+
+    if config.head == 'counting':
+        (train_losses, train_accs, test_losses, test_accs, confs, test_results, per_shape_stats) = results
+    else:
+        (train_losses, train_accs, test_losses, test_accs, confs, test_results) = results
+
     (train_num_losses, train_map_losses, train_shape_loss) = train_losses
     (train_acc_count, train_acc_dist, train_acc_all) = train_accs
     (train_count_num_loss, train_dist_num_loss, train_all_num_loss) = train_num_losses
@@ -83,6 +99,12 @@ def main(config):
     (test_acc_count, test_acc_map, test_acc_dist, test_acc_all) = test_accs
     (test_count_num_loss, test_dist_num_loss, test_all_num_loss) = test_num_losses
     (test_count_map_loss, test_dist_map_loss, test_full_map_loss) = test_map_losses
+
+    if config.head == 'counting':
+        (train_percls_loss, train_percls_acc, train_percls_strict_acc,
+        train_percls_precision, train_percls_recall, train_percls_specificity,
+        test_percls_loss, test_percls_acc, test_percls_strict_acc,
+        test_percls_precision, test_percls_recall, test_percls_specificity) = per_shape_stats
 
     # train_loss, train_acc, train_num_loss, train_shape_loss, train_full_map_loss, train_count_map_loss, test_loss, test_acc, test_num_loss, test_shape_loss, test_full_map_loss, test_count_map_loss, conf, test_results = results
     test_results.to_pickle(f'{results_dir}/test_results_{base_name}.pkl')
@@ -101,6 +123,15 @@ def main(config):
     df_train['accuracy dist'] = train_acc_dist
     df_train['accuracy all'] = train_acc_all
     df_train['epoch'] = np.arange(config.n_epochs + 1)
+
+    if config.head == 'counting':
+        df_train['percls loss'] = list(train_percls_loss)
+        df_train['percls acc'] = list(train_percls_acc)
+        df_train['percls strict acc'] = list(train_percls_strict_acc)
+        df_train['percls precision'] = list(train_percls_precision)
+        df_train['percls recall'] = list(train_percls_recall)
+        df_train['percls specificity'] = list(train_percls_specificity)
+
     # df_train['rnn iterations'] = config.n_iters
     df_train['dataset'] = 'train'
     _, test_loaders = loaders
@@ -125,6 +156,14 @@ def main(config):
         df_test_list[ts]['test lums'] = str(loader.lums)
         df_test_list[ts]['epoch'] = np.arange(config.n_epochs + 1)
 
+        if config.head == 'counting':
+            df_test_list[ts]['percls loss'] = list(test_percls_loss[ts])
+            df_test_list[ts]['percls acc'] = list(test_percls_acc[ts])
+            df_test_list[ts]['percls strict acc'] = list(test_percls_strict_acc[ts])
+            df_test_list[ts]['percls precision'] = list(test_percls_precision[ts])
+            df_test_list[ts]['percls recall'] = list(test_percls_recall[ts])
+            df_test_list[ts]['percls specificity'] = list(test_percls_specificity[ts])
+
     np.save(f'{results_dir}/confusion_{base_name}', confs)
     if config.save_batch_confusion:
         np.save(f'{results_dir}/batch_confusion_{base_name}', trainer.batch_confusion)
@@ -143,7 +182,7 @@ if __name__ == '__main__':
     """
     config = get_config()
 
-    # config_dir = Path("/Users/mosorio/Documents/ChrisWork/saccades/datasets/config_dir")
+    # config_dir = Path("/Users/mosorio/Documents/ChrisWork/saccades/datasets/config_dir") 
     config_dir = Path("/mnt/quick/maria/saccades/datasets/config_dir")
     config_dir.mkdir(parents=True, exist_ok=True) 
     
