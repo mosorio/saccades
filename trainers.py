@@ -248,10 +248,10 @@ class Trainer():
 
         if focal_gamma and focal_gamma > 0.0:
             #present_mask = (present > 0).unsqueeze(-1).float()   # [B,S,1]
-            p = torch.sigmoid(map_logits)
+            p = torch.sigmoid(map_logits)                              # [B,S,M] predicted probabilities   
             y = map_targets.float()
             pt = torch.where(y > 0.5, p, 1.0 - p)                      # [B,S,M] the model’s probability of the true label per cell
-            focal_w = (1.0 - pt).clamp_min(0).pow(focal_gamma)         # [B,S,M] down-weights easy cells (pt≈1) and up-weights hard cells (pt≈0)
+            focal_w = (1.0 - pt).clamp_min(0).pow(focal_gamma)         # [B,S,M] down-weights easy cells (pt≈1) and up-weights hard cells (pt≈0) (1 - pt)^gamma
             per_elem = per_elem * focal_w                              # apply focal modulation
             #per_elem = per_elem * torch.where(present_mask > 0, focal_w, 1.0)
 
@@ -310,6 +310,9 @@ class Trainer():
         train_full_map_loss  = np.zeros((n_epochs + 1,))  # unused here
 
         train_sh_loss = np.zeros((n_epochs + 1,))
+        train_percls_loss = np.zeros((n_epochs + 1, self.n_shapes))
+        train_percls_acc  = np.zeros((n_epochs + 1, self.n_shapes))
+
 
         train_acc_count = np.zeros((n_epochs + 1,))  
         train_acc_dist  = np.zeros((n_epochs + 1,))  # unused here
@@ -333,6 +336,10 @@ class Trainer():
         test_sh_loss  = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
         test_acc_count = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
         test_acc_map   = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+
+        test_percls_loss = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
+        test_percls_acc  = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
+
         test_acc_dist  = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
         test_acc_all   = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
 
@@ -351,7 +358,9 @@ class Trainer():
             train_count_num_loss[0] = tr_num_loss
             train_acc_count[0]      = tr_acc  
             train_count_map_loss[0] = tr_map_loss                            
-            train_acc_map[0]        = tr_map_f1  
+            train_acc_map[0]        = tr_map_f1 
+            train_percls_acc[0]     = tr_percls_acc
+            train_percls_loss[0]    = tr_percls_loss 
 
             # train_acc_map[0]        = -1
             # train_sh_loss[0]        = -1
@@ -382,6 +391,10 @@ class Trainer():
 
                 test_full_map_loss[ts][0]  = -1
                 test_dist_map_loss[ts][0]  = -1
+
+                test_percls_acc[ts][0]     = te_percls_acc
+                test_percls_loss[ts][0]    = te_percls_loss
+
                 confs[0][ts] = conf
 
                 # test_acc_map[ts][0]        = -1
@@ -478,6 +491,9 @@ class Trainer():
                 train_count_map_loss[ep] = tr_map_loss                     
                 train_acc_map[ep]        = tr_map_f1   
 
+                train_percls_acc[ep]     = percls_acc
+                train_percls_loss[ep]    = percls_loss  
+
                 # train_acc_map[ep]        = -1
                 # train_sh_loss[ep]        = -1
                 # train_count_map_loss[ep] = -1
@@ -505,6 +521,9 @@ class Trainer():
                     test_acc_map[ts][ep]        = te_map_f1                 
                     test_loss[ts][ep]           = te_loss
                     test_sh_loss[ts][ep]        = -1
+
+                    test_percls_acc[ts][ep]     = te_percls_acc
+                    test_percls_loss[ts][ep]    = te_percls_loss
                     confs[ep][ts] = conf
 
                     # test_acc_map[ts][ep]        = -1
