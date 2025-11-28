@@ -122,6 +122,7 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
         print('Using numerosity_target as count target')
         count_num = torch.tensor(dataset['numerosity_target'].values).long().to(config.device)
         dist_num = torch.zeros_like(count_num).long().to(config.device)
+        # print("count_num", count_num[:10])
         # print('count_num shape:', count_num.shape)
         # print(count_num)
 
@@ -162,7 +163,7 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
         rel_classes = int(count_num.max().item() + 1)
         print(f'Number of relative classes: {rel_classes}')
         config.rel_output_size = rel_classes    # stash for model construction
-    elif config.head == 'relational':
+    elif config.head == 'relational' or (config.head == 'counting' and config.count_mode =='total'):
         count_num -= config.min_num
 
     ### INTEGRATION SCORE ###
@@ -199,6 +200,8 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
     if config.head == 'counting':
         print('Using one-hot version of locations_class_index as count map target')
         loc_idx = torch.tensor(dataset['locations_class_index'].values).long()  # [B, grid]
+        loc_idx[loc_idx == 9] = 8    # map index 9 to 8
+
         # print('loc_idx:', loc_idx[0])
         n_shapes = (loc_idx.max().item())
         mask = (loc_idx > 0)                                   # True where a shape exists
@@ -304,6 +307,7 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
                     # remove distractor shape
                     shape_array[:, :, 0] = 0
                 shape_input = torch.tensor(shape_array).float().to(config.device)
+                # print('shape_input shape', shape_input.shape)
             elif shape_format == 'onehot':
                 onehot_array = dataset['glimpse_shape_onehot'].values   # [N, T, num_shapes]
                 shape_input = torch.tensor(onehot_array).float().to(config.device)

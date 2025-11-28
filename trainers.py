@@ -67,7 +67,7 @@ class Trainer():
         self.config = config
         self.current_map_f1 = 0
         self.head_mode = getattr(config, 'head', 'relational')
-        self.n_shapes = getattr(config, 'n_shapes', 4)
+        self.n_shapes = getattr(config, 'map_shape_count', 8)
         self.count_mode = getattr(config, 'count_mode', 'total') 
         #self.n_shapes = getattr(config, 'max_num', 8)
 
@@ -238,7 +238,7 @@ class Trainer():
     #     return loss, map_f1, per_shape_loss, per_shape_acc, strict_correct, recall.cpu().numpy(), specificity.cpu().numpy(), precision.cpu().numpy()
     
     def _per_shape_map_bce_and_f1(self, map_logits, map_targets, neg_w = 0.1, focal_gamma = 2.0):
-        B, S, M = map_logits.shape
+        B, S, M = map_logits.shape # B=batch, S=shapes, M=map cells
 
         # elementwise BCE (no reduction) and reshape to [B,S,M]
         per_elem = self.criterion_bce_count_noreduce(                  
@@ -265,6 +265,16 @@ class Trainer():
         per_shape_weight = (w_shape.sum(dim=0) * M).clamp_min(1e-8)    # [S]
         per_shape_loss = (per_elem * w).sum(dim=(0, 2)) / per_shape_weight
 
+        present_mask = (present > 0).unsqueeze(-1).float()             # [B,S,1]
+        absent_mask  = 1.0 - present_mask                              # [B,S,1]
+
+        # Unweighted subset averages (useful to see each subset’s raw difficulty)
+        denom_present = (present.sum() * M).clamp_min(1e-8)            # scalar
+        denom_absent  = (((B*S) - present.sum()) * M).clamp_min(1e-8)
+
+        present_loss = (per_elem * present_mask).sum() / denom_present 
+        absent_loss  = (per_elem * absent_mask ).sum() / denom_absent  
+
         with torch.no_grad():
             preds = (torch.sigmoid(map_logits) > 0.5).long()
             tp = (preds * map_targets).sum(dim=(0, 2)).float()
@@ -280,7 +290,7 @@ class Trainer():
             strict_correct = (preds == map_targets).all(dim=2).float().mean(dim=0).cpu().numpy()
             
 
-        return loss, map_f1, per_shape_loss, per_shape_acc, strict_correct, recall.cpu().numpy(), specificity.cpu().numpy(), precision.cpu().numpy()
+        return loss, map_f1, per_shape_loss, per_shape_acc, strict_correct, recall.cpu().numpy(), specificity.cpu().numpy(), precision.cpu().numpy(), present_loss.item(), absent_loss.item()
 
 
     def train_network(self):
@@ -327,6 +337,8 @@ class Trainer():
         train_percls_precision   = np.zeros((n_epochs + 1, self.n_shapes))
         train_percls_recall      = np.zeros((n_epochs + 1, self.n_shapes))
         train_percls_specificity = np.zeros((n_epochs + 1, self.n_shapes))
+        train_present_loss      = np.zeros((n_epochs + 1,))
+        train_absent_loss       = np.zeros((n_epochs + 1,))
 
         train_acc_count = np.zeros((n_epochs + 1,))  
         train_acc_dist  = np.zeros((n_epochs + 1,))  # unused here
@@ -357,6 +369,8 @@ class Trainer():
         test_percls_precision   = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
         test_percls_recall      = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
         test_percls_specificity = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
+        test_present_loss      = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
+        test_absent_loss       = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
 
 
         test_acc_dist  = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
@@ -370,7 +384,7 @@ class Trainer():
         # ===========================
         if counting:
             print("COUNTING HEAD")
-            ep_tr_loss, tr_num_loss, tr_acc, _, tr_map_loss, tr_df, _, tr_map_f1, tr_percls_acc, tr_percls_loss, tr_percls_map_strict, tr_percls_map_prec, tr_percls_map_recall, tr_percls_map_spec = \
+            ep_tr_loss, tr_num_loss, tr_acc, _, tr_map_loss, tr_df, _, tr_map_f1, tr_percls_acc, tr_percls_loss, tr_percls_map_strict, tr_percls_map_prec, tr_percls_map_recall, tr_percls_map_spec, tr_present_loss, tr_absent_loss = \
                 self.test(self.train_loader, 0)
 
             train_loss[0]           = ep_tr_loss
@@ -385,6 +399,8 @@ class Trainer():
             train_percls_precision[0]   = tr_percls_map_prec
             train_percls_recall[0]      = tr_percls_map_recall
             train_percls_specificity[0] = tr_percls_map_spec
+            train_present_loss[0]       = tr_present_loss
+            train_absent_loss[0]        = tr_absent_loss
 
             # train_acc_map[0]        = -1
             # train_sh_loss[0]        = -1
@@ -393,7 +409,7 @@ class Trainer():
             # train_dist_map_loss[0]  = -1
 
             for ts, test_loader in enumerate(self.test_loaders):
-                te_loss, te_num_loss, te_acc, _, te_map_loss, epoch_df, conf, te_map_f1, te_percls_acc, te_percls_loss, te_percls_map_strict, te_percls_map_prec, te_percls_map_recall, te_percls_map_spec = \
+                te_loss, te_num_loss, te_acc, _, te_map_loss, epoch_df, conf, te_map_f1, te_percls_acc, te_percls_loss, te_percls_map_strict, te_percls_map_prec, te_percls_map_recall, te_percls_map_spec, te_present_loss, te_absent_loss = \
                     self.test(test_loader, 0)
                 
                 epoch_df['train shapes'] = str(getattr(config, 'train_shapes', ''))
@@ -422,6 +438,8 @@ class Trainer():
                 test_percls_precision[ts][0]   = te_percls_map_prec
                 test_percls_recall[ts][0]      = te_percls_map_recall
                 test_percls_specificity[ts][0] = te_percls_map_spec
+                test_present_loss[ts][0]       = te_present_loss
+                test_absent_loss[ts][0]        = te_absent_loss
 
                 confs[0][ts] = conf
 
@@ -510,7 +528,7 @@ class Trainer():
         for ep in range(1, n_epochs + 1):
     
             if counting:
-                ep_tr_loss, tr_num_loss, tr_acc, _, tr_map_loss, tr_map_f1, tr_percls_acc, tr_percls_loss, tr_percls_map_strict, tr_percls_map_prec, tr_percls_map_recall, tr_percls_map_spec = self.train(self.train_loader, ep)
+                ep_tr_loss, tr_num_loss, tr_acc, _, tr_map_loss, tr_map_f1, tr_percls_acc, tr_percls_loss, tr_percls_map_strict, tr_percls_map_prec, tr_percls_map_recall, tr_percls_map_spec, tr_present_loss, tr_absent_loss = self.train(self.train_loader, ep)
 
                 train_loss[ep]           = ep_tr_loss
                 train_count_num_loss[ep] = tr_num_loss
@@ -525,6 +543,8 @@ class Trainer():
                 train_percls_precision[ep]   = tr_percls_map_prec
                 train_percls_recall[ep]      = tr_percls_map_recall
                 train_percls_specificity[ep] = tr_percls_map_spec
+                train_present_loss[ep]       = tr_present_loss
+                train_absent_loss[ep]        = tr_absent_loss
 
                 # train_acc_map[ep]        = -1
                 # train_sh_loss[ep]        = -1
@@ -534,7 +554,7 @@ class Trainer():
 
                 # Evaluate all TEST sets
                 for ts, test_loader in enumerate(self.test_loaders):
-                    te_loss, te_num_loss, te_acc, _, te_map_loss, epoch_df, conf, te_map_f1, te_percls_acc, te_percls_loss, te_percls_map_strict, te_percls_map_prec, te_percls_map_recall, te_percls_map_spec= \
+                    te_loss, te_num_loss, te_acc, _, te_map_loss, epoch_df, conf, te_map_f1, te_percls_acc, te_percls_loss, te_percls_map_strict, te_percls_map_prec, te_percls_map_recall, te_percls_map_spec, te_present_loss, te_absent_loss= \
                         self.test(test_loader, ep)
 
                     epoch_df['train shapes'] = str(getattr(config, 'train_shapes', ''))
@@ -560,6 +580,8 @@ class Trainer():
                     test_percls_precision[ts][ep]   = te_percls_map_prec
                     test_percls_recall[ts][ep]      = te_percls_map_recall
                     test_percls_specificity[ts][ep] = te_percls_map_spec
+                    test_present_loss[ts][ep]       = te_present_loss
+                    test_absent_loss[ts][ep]        = te_absent_loss
 
                     confs[ep][ts] = conf
 
@@ -697,9 +719,9 @@ class Trainer():
         if counting:
             per_shape_stats = (
                 train_percls_loss, train_percls_acc, train_percls_strict_acc,
-                train_percls_precision, train_percls_recall, train_percls_specificity,
+                train_percls_precision, train_percls_recall, train_percls_specificity, train_present_loss, train_absent_loss,
                 test_percls_loss, test_percls_acc, test_percls_strict_acc,
-                test_percls_precision, test_percls_recall, test_percls_specificity
+                test_percls_precision, test_percls_recall, test_percls_specificity, test_present_loss, test_absent_loss
             )
             results_list = res_tr + res_te + [per_shape_stats]
         else:
@@ -939,6 +961,7 @@ class Trainer():
             n_batches = 0
             epoch_num_loss, epoch_map_loss, epoch_acc_list, map_f1_list = [], [], [], []  
             percls_losses_accum, percls_acc_accum, percls_strict_acc_accum, percls_prec_accum, percls_recall_accum, percls_spec_accum = [], [], [], [], [], [] 
+            present_loss_accum, absent_loss_accum = [], []
                                               
             #epoch_df, conf = pd.DataFrame(), None                                         
 
@@ -974,7 +997,7 @@ class Trainer():
 
                 # MAP BCE
                 (map_loss, map_f1, per_shape_loss, per_shape_map_acc, per_shape_map_strict_acc, per_shape_precision, 
-                 per_shape_recall, per_shape_spec) = self._per_shape_map_bce_and_f1(last_map_logits, all_loc) 
+                 per_shape_recall, per_shape_spec, present_loss, absent_loss) = self._per_shape_map_bce_and_f1(last_map_logits, all_loc) 
 
                 # print('map_loss', map_loss)
                 # print('per_shape_loss', per_shape_loss)
@@ -1005,6 +1028,8 @@ class Trainer():
                 percls_prec_accum.append(per_shape_precision)
                 percls_recall_accum.append(per_shape_recall)
                 percls_spec_accum.append(per_shape_spec)
+                present_loss_accum.append(present_loss)
+                absent_loss_accum.append(absent_loss)
 
 
                 #percls_acc_accum.append(per_class_acc.detach().cpu())      
@@ -1041,8 +1066,8 @@ class Trainer():
 
                 test_results = pd.concat((test_results, batch_results))
 
-                # if self.config.use_loss != 'map':
-                #     confusion_matrix = self.update_confusion(target, pred_counts, num_dist, confusion_matrix)
+                if self.config.count_mode == 'total':
+                    confusion_matrix = self.update_confusion(target, pred_counts, num_dist, confusion_matrix)
 
             else:
                 # ===== RELATIONAL HEAD =====
@@ -1117,10 +1142,13 @@ class Trainer():
             ep_percls_map_recall = np.stack([to_np(x) for x in percls_recall_accum], axis=0).mean(axis=0)
             ep_percls_map_spec = np.stack([to_np(x) for x in percls_spec_accum], axis=0).mean(axis=0)   
 
+            ep_present_loss = np.mean(present_loss_accum)
+            ep_absent_loss  = np.mean(absent_loss_accum)
+
             return (ep_loss, ep_num_loss, ep_acc, None, 
-                    ep_map_loss, test_results, None, map_f1_mean, 
+                    ep_map_loss, test_results, confusion_matrix, map_f1_mean, 
                     ep_percls_map_acc, ep_percls_map_loss, ep_percls_map_strict, 
-                    ep_percls_map_prec, ep_percls_map_recall, ep_percls_map_spec)
+                    ep_percls_map_prec, ep_percls_map_recall, ep_percls_map_spec, ep_present_loss, ep_absent_loss)
         
             # epoch_loss  /= max(1, n_batches)
             # percls_acc   = (percls_acc_sum  / max(1, n_batches)).numpy()
@@ -1286,6 +1314,7 @@ class Trainer():
             n_batches = 0
             epoch_num_loss, epoch_map_loss, epoch_acc_list, map_f1_list = [], [], [], []  
             percls_losses_accum, percls_acc_accum, percls_strict_acc_accum, percls_prec_accum, percls_recall_accum, percls_spec_accum = [], [], [], [], [], [] 
+            present_loss_accum, absent_loss_accum = [], []
 
             percls_losses_accum = []                                                      
 
@@ -1318,7 +1347,7 @@ class Trainer():
             if counting:
                 # --- MAP loss: BCE on per-shape maps [B,S,M] ---
                 (map_loss, map_f1, per_shape_loss, per_shape_map_acc, per_shape_map_strict_acc, per_shape_precision, 
-                per_shape_recall, per_shape_spec) = self._per_shape_map_bce_and_f1(last_map_logits, locations)
+                per_shape_recall, per_shape_spec, present_loss, absent_loss) = self._per_shape_map_bce_and_f1(last_map_logits, locations)
 
                 # --- NUM loss: CE on counts ---
                 if self.count_mode == 'total':  # total counts [B]                     
@@ -1353,6 +1382,8 @@ class Trainer():
                 percls_prec_accum.append(per_shape_precision)
                 percls_recall_accum.append(per_shape_recall)
                 percls_spec_accum.append(per_shape_spec)
+                present_loss_accum.append(present_loss)
+                absent_loss_accum.append(absent_loss)
 
                 # epoch_loss += loss.item()
                 # percls_acc_sum  += per_class_loss.detach().cpu()
@@ -1403,10 +1434,13 @@ class Trainer():
             ep_percls_map_recall = np.stack([to_np(x) for x in percls_recall_accum], axis=0).mean(axis=0)
             ep_percls_map_spec = np.stack([to_np(x) for x in percls_spec_accum], axis=0).mean(axis=0)  
 
+            ep_present_loss = np.mean(present_loss_accum)
+            ep_absent_loss  = np.mean(absent_loss_accum)
+
 
             return (ep_loss, ep_num_loss, ep_acc, None, ep_map_loss, 
                     map_f1_mean, ep_percls_map_acc, ep_percls_map_loss, 
-                    ep_percls_map_strict, ep_percls_map_prec, ep_percls_map_recall, ep_percls_map_spec)
+                    ep_percls_map_strict, ep_percls_map_prec, ep_percls_map_recall, ep_percls_map_spec, ep_present_loss, ep_absent_loss)
 
             # epoch_loss /= max(1, n_batches)
             # percls_acc  = (percls_acc_sum / max(1, n_batches)).numpy()

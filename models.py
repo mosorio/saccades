@@ -362,10 +362,10 @@ class RNNClassifier2stream(nn.Module):
         self.head = kwargs['head'] if 'head' in kwargs.keys() else None         # 'relational' | 'counting'
         self.count_K = self.max_num                                             # expected max count K
         if self.head == 'counting':
-            self.n_shapes=self.map_classes
-            print(self.n_shapes)
-            self.output_size = int(self.count_K)
-            print(self.output_size)
+            self.n_shapes= self.map_classes 
+            # print(self.n_shapes)
+            self.output_size = int(self.max_num - self.min_num) + 1
+            # print(self.output_size)
 
         # Counting mode: 'total' or 'per_shape'
         self.count_mode = kwargs['count_mode'] if 'count_mode' in kwargs.keys() else 'total'
