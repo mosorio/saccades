@@ -61,6 +61,46 @@ def balanced_pair_split(k, labels=None, seed=0):
             return A, B
     raise RuntimeError("Could not find balanced split")
 
+def balanced_subset_split(labels, subset_size=2, seed=0):
+    labels = list(labels)
+    if subset_size < 1 or subset_size > len(labels):
+        raise ValueError(f"subset_size must be in [1, {len(labels)}], got {subset_size}")
+
+    all_sets = list(combinations(labels, subset_size))
+    n_total = len(all_sets)
+
+    rng = np.random.default_rng(seed)
+
+    def split_once():
+        idx = rng.permutation(np.arange(n_total))
+        half = n_total // 2
+        return [all_sets[i] for i in idx[:half]], [all_sets[i] for i in idx[half:]]
+
+    def counts(group):
+        c = Counter()
+        for subset in group:
+            for lab in subset:
+                c[lab] += 1
+        return c
+
+    for _ in range(2000):
+        A, B = split_once()
+        cA, cB = counts(A), counts(B)
+        # ensure every label has very similar counts across halves
+        if all(abs(cA[l] - cB[l]) <= 1 for l in labels):
+            return A, B
+
+    raise RuntimeError("Could not find balanced subset split")
+
+
+def weighted_pair_split(labels, mix=0.7, seed=0):
+    rng = np.random.default_rng(seed)
+    pairs = list(combinations(labels, 2))
+    rng.shuffle(pairs)
+    cutoff = int(len(pairs) * mix)
+    print(f"Weighted pair split with mix={mix}: {cutoff} train pairs, {len(pairs)-cutoff} test pairs")
+    return pairs[:cutoff], pairs[cutoff:]
+
 @staticmethod
 def assign_min_background(num, shapes_set, fixed_background_shape, task_type='min'):
     """
@@ -401,9 +441,11 @@ class DatasetGenerator:
 
         # pair-split enforcement
         if (chosen_pair is not None):
-            a, b = chosen_pair  # actual shape IDs
+            #print(f'Using chosen pair: {chosen_pair}')
+            classes = list(chosen_pair)
+            # a, b = chosen_pair  # actual shape IDs
             # Use your existing routine: two classes, sum to num, not-all-equal
-            shape_assign = assign_minmax_class_counts([a, b], num)
+            shape_assign = assign_minmax_class_counts(classes, num)
         else:
             if distinctiveness == 0:  # All shapes in the image will be the same
                 shape = np.random.choice(shapes_set)
@@ -758,17 +800,17 @@ class DatasetGenerator:
                     i += 1
                     continue
 
-                # If the label already hit label_target, skip it
-                if label_counts[lbl] >= label_target:
-                    i += 1
-                    continue
+                # # If the label already hit label_target, skip it
+                # if label_counts[lbl] >= label_target:
+                #     i += 1
+                #     continue
 
                 # If the pair already hit pair_target, skip it
                 if chosen_pair and pair_counts[chosen_pair] >= pair_target:
                     i += 1
                     continue
 
-                label_counts[lbl] += 1
+                # label_counts[lbl] += 1
                 if chosen_pair:
                     pair_counts[chosen_pair] += 1
                 data.append(example)
@@ -1154,13 +1196,32 @@ def main():
     parser.add_argument('--pair_split', action='store_true', default=False, help='Use balanced pair split; force exactly two shapes per image from the chosen half')
     parser.add_argument('--pair_group', type=str, default='train', choices=['train','test'], help='Which half of the split to use')
     parser.add_argument('--pair_seed', type=int, default=0, help='Seed for pair split')
+    parser.add_argument('--pair_mix_train', type=float, default=0.7,
+    help='Fraction of examples drawn from the train-pair list; '
+         'the remainder are sampled from the test-pair list.')
+    parser.add_argument('--pair_group_size', type=int, default=2,
+        help='Number of distinct shapes per image for pair/subset split (k in C(n,k))'
+    )
 
     conf = parser.parse_args()
 
+    # if conf.pair_split:
+    #     labels = conf.shapes
+    #     train_pairs_letters, test_pairs_letters = balanced_pair_split(k=len(labels), labels=labels, seed=conf.pair_seed)
+    #     conf.allowed_pairs_letters = train_pairs_letters if conf.pair_group == 'train' else test_pairs_letters
+    
     if conf.pair_split:
-        labels = conf.shapes
-        train_pairs_letters, test_pairs_letters = balanced_pair_split(k=len(labels), labels=labels, seed=conf.pair_seed)
-        conf.allowed_pairs_letters = train_pairs_letters if conf.pair_group == 'train' else test_pairs_letters
+        labels = conf.shapes            
+        subset_size = conf.pair_group_size
+        train_sets_letters, test_sets_letters = balanced_subset_split(labels=labels, subset_size=subset_size, seed=conf.pair_seed)
+        conf.allowed_pairs_letters = (
+            train_sets_letters if conf.pair_group == 'train' else test_sets_letters
+        )
+
+    # if conf.pair_split:
+    #     labels = conf.shapes
+    #     train_pairs_letters, test_pairs_letters = weighted_pair_split(conf.shapes, mix=conf.pair_mix_train, seed=conf.pair_seed)
+    #     conf.allowed_pairs_letters = train_pairs_letters if conf.pair_group == 'train' else test_pairs_letters
 
     if conf.same: # so you can still use this input argument (but the variable is not used later on)
         conf.distinctive = 0
@@ -1199,16 +1260,39 @@ def main():
     logscale = '_logscale' if conf.logscale else ''
 
 
-    # build the split if requested
+    # # build the split if requested
+    # if conf.pair_split:
+    #     labels = conf.shapes
+    #     train_pairs, test_pairs = balanced_pair_split(k=len(labels), labels=labels, seed=conf.pair_seed)
+    #     # (a,b) are actual shape IDs already; normalize tuple order
+    #     train_pairs = [tuple(sorted((int(a), int(b)))) for a,b in train_pairs]
+    #     test_pairs  = [tuple(sorted((int(a), int(b)))) for a,b in test_pairs]
+    #     conf.allowed_pairs = train_pairs if conf.pair_group == 'train' else test_pairs
+    # else:
+    #     conf.allowed_pairs = None
+
     if conf.pair_split:
-        labels = conf.shapes
-        train_pairs, test_pairs = balanced_pair_split(k=len(labels), labels=labels, seed=conf.pair_seed)
-        # (a,b) are actual shape IDs already; normalize tuple order
-        train_pairs = [tuple(sorted((int(a), int(b)))) for a,b in train_pairs]
-        test_pairs  = [tuple(sorted((int(a), int(b)))) for a,b in test_pairs]
-        conf.allowed_pairs = train_pairs if conf.pair_group == 'train' else test_pairs
+        labels = conf.shapes            
+        subset_size = conf.pair_group_size
+        train_sets, test_sets = balanced_subset_split(labels=labels, subset_size=subset_size, seed=conf.pair_seed)
+        # Normalize to tuples of ints
+        train_sets = [tuple(sorted(int(x) for x in s)) for s in train_sets]
+        test_sets  = [tuple(sorted(int(x) for x in s)) for s in test_sets]
+        conf.allowed_pairs = train_sets if conf.pair_group == 'train' else test_sets
     else:
         conf.allowed_pairs = None
+
+    # # build the split if requested
+    # if conf.pair_split:
+    #     labels = conf.shapes
+    #     train_pairs, test_pairs = weighted_pair_split(conf.shapes, mix=conf.pair_mix_train, seed=conf.pair_seed)
+    #     # (a,b) are actual shape IDs already; normalize tuple order
+    #     train_pairs = [tuple(sorted((int(a), int(b)))) for a,b in train_pairs]
+    #     test_pairs  = [tuple(sorted((int(a), int(b)))) for a,b in test_pairs]
+    #     conf.allowed_pairs = train_pairs if conf.pair_group == 'train' else test_pairs
+    #     print(f'Using {len(conf.allowed_pairs)} allowed pairs for {conf.pair_group} split:')
+    # else:
+    #     conf.allowed_pairs = None
 
 
     # define_globals(conf)
