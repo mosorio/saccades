@@ -48,9 +48,15 @@ def main(config):
     # model_dir = 'models/toy/letters'
     # results_dir = 'results/toy/letters'
     # fig_dir = 'figures/toy/letters'
-    model_dir = 'models/logpolar'
-    results_dir = 'results/logpolar'
-    fig_dir = 'figures/logpolar'
+    suffix = f"min{config.min_num}_max{config.max_num}_{config.task_type}_{config.count_mode}_seed{config.seed}_weighting{config.map_neg_w}_focalGamma{config.map_focal_gamma}"
+    results_dir = f"results_{suffix}/logpolar"
+    model_dir  = f"models_{suffix}/logpolar"
+    fig_dir = f"figures_{suffix}/logpolar"
+
+    config.results_dir = results_dir
+    config.model_dir = model_dir
+    config.fig_dir = fig_dir
+
     dir_list = [model_dir, results_dir, fig_dir]
     for directory in dir_list:
         if not os.path.exists(directory):

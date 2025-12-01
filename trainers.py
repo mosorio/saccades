@@ -22,9 +22,6 @@ criterion_noreduce = nn.CrossEntropyLoss(reduction='none')
 criterion_mse = nn.MSELoss()
 criterion_mse_noreduce = nn.MSELoss(reduction='none')
 
-model_dir = 'models/logpolar'
-results_dir = 'results/logpolar'
-fig_dir = 'figures/logpolar'
 eps=1e-10
 def choose_trainer(model, loaders, config):
     if config.model_type in ['cnn', 'bigcnn', 'mlp', 'unserial', 'map2num_decoder']:
@@ -69,6 +66,8 @@ class Trainer():
         self.head_mode = getattr(config, 'head', 'relational')
         self.n_shapes = getattr(config, 'map_shape_count', 8)
         self.count_mode = getattr(config, 'count_mode', 'total') 
+        self.map_neg_w = getattr(config, 'map_neg_w', 0.1)
+        self.map_focal_gamma = getattr(config, 'map_focal_gamma', 2.0)
         #self.n_shapes = getattr(config, 'max_num', 8)
 
         # Criteria for counting head (per-class CE)
@@ -237,7 +236,10 @@ class Trainer():
 
     #     return loss, map_f1, per_shape_loss, per_shape_acc, strict_correct, recall.cpu().numpy(), specificity.cpu().numpy(), precision.cpu().numpy()
     
-    def _per_shape_map_bce_and_f1(self, map_logits, map_targets, neg_w = 0.1, focal_gamma = 2.0):
+    def _per_shape_map_bce_and_f1(self, map_logits, map_targets):
+        neg_w = self.map_neg_w
+        focal_gamma = self.map_focal_gamma
+
         B, S, M = map_logits.shape # B=batch, S=shapes, M=map cells
 
         # elementwise BCE (no reduction) and reshape to [B,S,M]
@@ -620,7 +622,7 @@ class Trainer():
                     threshold += 25 # This will be 51,76, and then 101 so we'll save at 51 and 76
                 if savethisep:
                     # Save confusion
-                    np.save(f'{results_dir}/confusion_at_{threshold-26}_{base_name}', confs[ep - 1])
+                    np.save(f'{config.results_dir}/confusion_at_{threshold-26}_{base_name}', confs[ep - 1])
                     if config.save_act and savethisep:
                         print(f'Saving activations at {threshold-26}% accuracy...')
                         self.save_activations(self.model, self.test_loaders, f'{base_name}_acc{threshold-26}', config)
@@ -1585,7 +1587,7 @@ class Trainer():
         plt.title(title)
         plt.ylim([0, 102])
         plt.ylabel('Accuracy on number task')
-        plt.savefig(f'{fig_dir}/accuracy_{base_name}.png', dpi=300)
+        plt.savefig(f'{config.fig_dir}/accuracy_{base_name}.png', dpi=300)
         plt.close()
 
         # by integration score plot
@@ -1655,7 +1657,7 @@ class Trainer():
         ax2.set_title('Map F1')
         # ax2.set_ylabel('Accuracy on map task')
         plt.tight_layout()
-        plt.savefig(f'{fig_dir}/accuracy_{base_name}.png', dpi=300)
+        plt.savefig(f'{config.fig_dir}/accuracy_{base_name}.png', dpi=300)
         plt.close()
 
         # by integration score plot
@@ -1717,7 +1719,7 @@ class Trainer():
             # ax2 = ax.twinx()
             # ax2.set_yticks(ticks, np.sum(confs[i], axis=1))
         fig.tight_layout()
-        plt.savefig(f'{fig_dir}/confusion_{self.config.base_name}.png', dpi=300)
+        plt.savefig(f'{self.config.fig_dir}/confusion_{self.config.base_name}.png', dpi=300)
         plt.close()
 
     def make_loss_plot(self, data, train_losses, ep, config):
@@ -1772,7 +1774,7 @@ class Trainer():
         fig.tight_layout()
         # ax2.legend(title='Integration Difficulty')
         ax3.legend()
-        plt.savefig(f'{fig_dir}/loss_{config.base_name}.png', dpi=300)
+        plt.savefig(f'{config.fig_dir}/loss_{config.base_name}.png', dpi=300)
         plt.close()
         
     def make_loss_plot_quick(self, test_losses, train_losses, ep, config):
@@ -1831,7 +1833,7 @@ class Trainer():
         ax3.grid()
         
         
-        plt.savefig(f'{fig_dir}/loss_{config.base_name}.png', dpi=300)
+        plt.savefig(f'{config.fig_dir}/loss_{config.base_name}.png', dpi=300)
         plt.close()
         
     @torch.no_grad()
@@ -2056,7 +2058,7 @@ class TrainerDistract(Trainer):
             # ax2 = ax.twinx()
             # ax2.set_yticks(ticks, np.sum(confs[i], axis=1))
         fig.tight_layout()
-        plt.savefig(f'{fig_dir}/confusion_{self.config.base_name}.png', dpi=300)
+        plt.savefig(f'{self.config.fig_dir}/confusion_{self.config.base_name}.png', dpi=300)
         plt.close()
 
 
