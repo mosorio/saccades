@@ -10,6 +10,7 @@ import os
 import numpy as np
 import pandas as pd
 from itertools import product
+import random
 
 import torch
 
@@ -70,6 +71,16 @@ def main(config):
             print(f'{base_name} already exists. \n QUITTING.')
             exit()
     config.base_name = base_name
+
+    seed = getattr(config, 'seed', 0)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     # loaders, test_xarray = choose_loader(config)
     loaders = choose_loader(config)
     config.height, config.width = loaders[0].image_height, loaders[0].image_width

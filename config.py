@@ -120,6 +120,7 @@ def get_config():
     parser.add_argument('--save_act', action='store_true', default=False, help='whether to save network activations. recurrent layer if rnn or premap layer if cnn.')
     parser.add_argument('--if_exists', type=str, default='ask', help='What to do if results for this config already exist? "skip", "force" overwrite, or "ask" to increase rep counter.')
     parser.add_argument('--save_batch_confusion', action='store_true', default=False)
+    parser.add_argument('--seed', type=int, default=0, help='random seed for reproducibility')
 
 
     # Hardware
