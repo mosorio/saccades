@@ -128,7 +128,7 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
 
     elif config.head == 'counting' and config.count_mode =='per_shape':
         print('Using shape_hist as count target')
-        count_num = torch.tensor(dataset['shape_hist'].values[:,1:len(config.train_shapes)+1]).long().to(config.device) #[:,1:config.max_num+2]
+        count_num = torch.tensor(dataset['shape_hist'].values[:,config.train_shapes]).long().to(config.device) #[:,1:config.max_num+2]
         dist_num = torch.zeros_like(count_num).long().to(config.device)
         # print("count_num", count_num[:10])
         # print("count_num shape:", count_num.shape)
