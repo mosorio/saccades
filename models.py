@@ -291,8 +291,7 @@ class CountingHead(nn.Module):
         self.map_gen  = nn.Linear(hidden_dim, map_dim * n_shapes)
 
         # Pool a single score from each shape's map (pure linear sum across cells)
-        self.map_pool = nn.Linear(map_dim, 1, bias=False)
-        # self.total_fc = nn.Linear(n_shapes, 1)
+        # self.map_pool = nn.Linear(map_dim, 1, bias=False)
 
         self.total_fc = None
         if mode == 'total':
@@ -310,11 +309,6 @@ class CountingHead(nn.Module):
         # ----- Per-shape maps (logits for BCE): [B, S, M]
         maps_flat = self.map_gen(h)                         # [B, n_shapes*map_dim]
         per_shape_maps = maps_flat.view(B, self.n_shapes, self.map_dim)  # [B, S, M]
-
-        # ----- Pooled per-shape scores: [B, S]
-        per_shape_scores = self.map_pool(
-            per_shape_maps.view(B*self.n_shapes, self.map_dim)
-        ).view(B, self.n_shapes)                            # [B, S]
 
         # ----- Per-shape count logits: [B, S, K+1]
         if self.mode == 'total':
@@ -374,7 +368,7 @@ class RNNClassifier2stream(nn.Module):
         elif self.head == 'counting' and self.count_mode == 'per_shape':
             self.n_shapes= self.map_classes 
             self.output_size = int(self.count_K) + 1
-            print('Per-shape counting with n_shapes:', self.n_shapes, 'and count_K:', self.count_K)
+            #print('Per-shape counting with n_shapes:', self.n_shapes, 'and count_K:', self.count_K)
 
         if self.mult:
             embedding_size = 64
@@ -407,7 +401,7 @@ class RNNClassifier2stream(nn.Module):
             self.num_readout = nn.Linear(penult_dim, self.n_classes, bias=False)
         elif self.head == 'counting':
             # print('Count Mode:', self.count_mode)
-            print('Counting head with n_shapes:', self.n_shapes, 'and output_size:', self.output_size)
+            # print('Counting head with n_shapes:', self.n_shapes, 'and output_size:', self.output_size)
             self.count_head = CountingHead(
                 hidden_dim=hidden_size,
                 map_dim=self.map_size,
@@ -518,7 +512,7 @@ class RNNClassifier2stream(nn.Module):
             per_shape_maps, per_shape_scores, num = self.count_head(x)  # maps: [B,S,M]
             B = x.size(0)
             map_   = per_shape_maps                     # for BCEWithLogitsLoss (raw logits)
-            print("per_shape_maps", per_shape_maps.shape)
+            #print("per_shape_maps", per_shape_maps.shape)
             penult = per_shape_maps.view(B, -1)         # flattened per-shape maps 
 
             return num, pix, map_, hidden, x, penult, per_shape_scores

@@ -48,7 +48,7 @@ def main(config):
     # model_dir = 'models/toy/letters'
     # results_dir = 'results/toy/letters'
     # fig_dir = 'figures/toy/letters'
-    suffix = f"min{config.min_num}_max{config.max_num}_{config.task_type}_{config.count_mode}_seed{config.seed}_weighting{config.map_neg_w}_focalGamma{config.map_focal_gamma}"
+    suffix = f"min{config.min_num}_max{config.max_num}_{config.n_glimpses}_{config.task_type}_{config.count_mode}_seed{config.seed}_weighting{config.map_neg_w}_focalGamma{config.map_focal_gamma}"
     results_dir = f"results_{suffix}/logpolar"
     model_dir  = f"models_{suffix}/logpolar"
     fig_dir = f"figures_{suffix}/logpolar"
