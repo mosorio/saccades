@@ -7,6 +7,11 @@ n_glimpses="${1:-12}" # default 12, or pass first arg to override
 min_num="${2:-3}" # default 3, or pass second arg to override
 max_num="${3:-7}" # default 7, or pass third arg to override
 task="${4:-min}" # default min, or pass fourth arg to override
+head="${5:-relational}"
+count_mode="${6:-total}"
+negw="${7:-0.05}"
+gamma="${8:-2.0}"
+seed="${9:-1}"
 
 
 logdir="./logs"
