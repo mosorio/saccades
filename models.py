@@ -294,14 +294,14 @@ class CountingHead(nn.Module):
         self.map_pool = nn.Linear(map_dim, 1, bias=False)
         # self.total_fc = nn.Linear(n_shapes, 1)
 
-        # Per-shape counting head: each shape's map -> its own K+1 logits
-        self.per_shape_fc = nn.Linear(map_dim, self.n_counts, bias=True)
-
         self.total_fc = None
         if mode == 'total':
             assert self.n_counts is not None and self.n_counts > 1, "Need K+1 classes for CE."
-            self.total_fc = nn.Linear(n_shapes, self.n_counts)
+            self.total_fc = nn.Linear(map_dim, self.n_counts, bias=True)
         else:
+            print("Using per-shape counting head.")
+            # Per-shape counting head: each shape's map -> its own K+1 logits
+            self.per_shape_fc = nn.Linear(map_dim, self.n_counts, bias=True)
             self.total_fc = None
 
     def forward(self, h):  # h: [B, hidden_dim]
@@ -317,15 +317,18 @@ class CountingHead(nn.Module):
         ).view(B, self.n_shapes)                            # [B, S]
 
         # ----- Per-shape count logits: [B, S, K+1]
-        per_shape_logits = self.per_shape_fc(
-            per_shape_maps.view(B * self.n_shapes, self.map_dim)
-        ).view(B, self.n_shapes, self.n_counts)
-
         if self.mode == 'total':
-            total_logits = self.total_fc(per_shape_scores)  # [B, 1]
-            return per_shape_maps, per_shape_scores, total_logits
+            # total_logits = self.total_fc(per_shape_scores)  # [B, 1]
+            joint_map = per_shape_maps.sum(dim=1)                       # [B, M]
+            total_logits = self.total_fc(joint_map)
+            return per_shape_maps, joint_map, total_logits
+            # return per_shape_maps, per_shape_scores, total_logits
         else:
-            return per_shape_maps, per_shape_scores, per_shape_logits
+            print("Computing per-shape count logits.")
+            per_shape_logits = self.per_shape_fc(
+                per_shape_maps.view(B * self.n_shapes, self.map_dim)
+            ).view(B, self.n_shapes, self.n_counts)
+            return per_shape_maps, None, per_shape_logits
         
 
 class RNNClassifier2stream(nn.Module):
@@ -358,17 +361,20 @@ class RNNClassifier2stream(nn.Module):
         self.max_num = kwargs['max_num'] if 'max_num' in kwargs.keys() else None
         self.map_size = map_size
 
-        # ----- Head selection + K (max count) for counting -----
+        # Counting mode: 'total' or 'per_shape'
+        self.count_mode = kwargs['count_mode'] if 'count_mode' in kwargs.keys() else 'total'
+
         self.head = kwargs['head'] if 'head' in kwargs.keys() else None         # 'relational' | 'counting'
         self.count_K = self.max_num                                             # expected max count K
-        if self.head == 'counting':
+        if self.head == 'counting' and self.count_mode == 'total':
             self.n_shapes= self.map_classes 
             # print(self.n_shapes)
             self.output_size = int(self.max_num - self.min_num) + 1
             # print(self.output_size)
-
-        # Counting mode: 'total' or 'per_shape'
-        self.count_mode = kwargs['count_mode'] if 'count_mode' in kwargs.keys() else 'total'
+        elif self.head == 'counting' and self.count_mode == 'per_shape':
+            self.n_shapes= self.map_classes 
+            self.output_size = int(self.count_K) + 1
+            print('Per-shape counting with n_shapes:', self.n_shapes, 'and count_K:', self.count_K)
 
         if self.mult:
             embedding_size = 64
@@ -401,6 +407,7 @@ class RNNClassifier2stream(nn.Module):
             self.num_readout = nn.Linear(penult_dim, self.n_classes, bias=False)
         elif self.head == 'counting':
             # print('Count Mode:', self.count_mode)
+            print('Counting head with n_shapes:', self.n_shapes, 'and output_size:', self.output_size)
             self.count_head = CountingHead(
                 hidden_dim=hidden_size,
                 map_dim=self.map_size,
@@ -511,6 +518,7 @@ class RNNClassifier2stream(nn.Module):
             per_shape_maps, per_shape_scores, num = self.count_head(x)  # maps: [B,S,M]
             B = x.size(0)
             map_   = per_shape_maps                     # for BCEWithLogitsLoss (raw logits)
+            print("per_shape_maps", per_shape_maps.shape)
             penult = per_shape_maps.view(B, -1)         # flattened per-shape maps 
 
             return num, pix, map_, hidden, x, penult, per_shape_scores
