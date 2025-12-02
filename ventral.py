@@ -33,6 +33,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import random_split
 from utils import Timer
+from pathlib import Path
 
 # from ray import tune
 # from ray.tune import CLIReporter
@@ -125,7 +126,7 @@ def train_model(model, optimizer, scheduler, loaders, config, device):
         print(f'Train (mse/ce/tot): {tr_loss_mse[ep+1]:.4}/{tr_loss_ce[ep+1]:.4}/{tr_loss[ep+1]:.4}/{tr_acc[ep+1]:.4}%')
         print(f'Test (mse/ce/tot): {te_loss_mse[ep+1]:.4}/{te_loss_ce[ep+1]:.4}/{te_loss[ep+1]:.4}/{te_acc[ep+1]:.4}%')
         if not ep % 10 or ep < 2:
-            plot_performance(tr_loss_mse, tr_acc, te_loss_mse, te_acc, config.base_name, ep+1)
+            plot_performance(tr_loss_mse, tr_acc, te_loss_mse, te_acc, config.base_name, ep+1, config)
         epoch_timer.stop_timer()
     tr_results = (tr_loss_mse, tr_loss_ce, tr_loss, tr_acc)
     te_results = (te_loss_mse, te_loss_ce, te_loss, te_acc)
@@ -155,7 +156,6 @@ def train_one_epoch(train_loader, model, optimizer, which_loss, config, device):
         batch_n += 1
         pred, _ = model(input)
 
-        print('target', target)
         pred, target = align_outputs_targets(pred, target, config)
         mse = criterion_mse(pred, target)
         ce = criterion_ce(pred, target)
@@ -449,8 +449,11 @@ def test_logpolar(loader, model, which_loss, config):
     return mse_loss, ce_loss, tot_loss, acc
 
 
-def plot_performance(tr_loss_mse, tr_acc, te_loss_mse, te_acc, base_name, ep):
-    fig_dir = 'figures/logpolar/ventral/'
+def plot_performance(tr_loss_mse, tr_acc, te_loss_mse, te_acc, base_name, ep, config):
+
+    fig_dir_ = Path(config.fig_dir)
+    fig_dir = fig_dir_ / 'ventral'
+    fig_dir.mkdir(parents=True, exist_ok=True)
     fig, (ax1, ax2) = plt.subplots(1, 2)
     ax1.plot(tr_loss_mse[:ep], label='Train')
     ax1.plot(te_loss_mse[:ep], label='Test')
@@ -887,9 +890,18 @@ def main():
     # model_dir = 'models/toy/letters/ventral'
     # results_dir = 'results/toy/letters/ventral'
     # fig_dir = 'figures/toy/letters/ventral'
-    model_dir = 'models/logpolar/ventral'
-    results_dir = 'results/logpolar/ventral'
-    fig_dir = 'figures/logpolar/ventral'
+
+    model_dir_ = Path(config.model_dir)
+    model_dir = model_dir_ / 'ventral'
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    results_dir_ = Path(config.results_dir)
+    results_dir = results_dir_ / 'ventral'
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    fig_dir_ = Path(config.fig_dir)
+    fig_dir = fig_dir_ / 'ventral'
+    fig_dir.mkdir(parents=True, exist_ok=True)
     dir_list = [model_dir, results_dir, fig_dir]
     for directory in dir_list:
         if not os.path.exists(directory):
