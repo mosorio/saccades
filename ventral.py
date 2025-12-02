@@ -34,6 +34,7 @@ import torch.optim as optim
 from torch.utils.data import random_split
 from utils import Timer
 from pathlib import Path
+from config import get_config
 
 # from ray import tune
 # from ray.tune import CLIReporter
@@ -451,9 +452,7 @@ def test_logpolar(loader, model, which_loss, config):
 
 def plot_performance(tr_loss_mse, tr_acc, te_loss_mse, te_acc, base_name, ep, config):
 
-    fig_dir_ = Path(config.fig_dir)
-    fig_dir = fig_dir_ / 'ventral'
-    fig_dir.mkdir(parents=True, exist_ok=True)
+    fig_dir = 'ventral_figures/'
     fig, (ax1, ax2) = plt.subplots(1, 2)
     ax1.plot(tr_loss_mse[:ep], label='Train')
     ax1.plot(te_loss_mse[:ep], label='Test')
@@ -829,7 +828,7 @@ def get_config():
     parser.add_argument('--multiclass', action='store_true', default=False,
     help='If set, ventral output size is restricted to the training shapes only')
     parser.add_argument('--policy', type=str, default='humanlike')
-    
+
     config = parser.parse_args()
     # Convert string input argument into a list of indices
     if config.train_shapes[0].isnumeric():
@@ -891,17 +890,10 @@ def main():
     # results_dir = 'results/toy/letters/ventral'
     # fig_dir = 'figures/toy/letters/ventral'
 
-    model_dir_ = Path(config.model_dir)
-    model_dir = model_dir_ / 'ventral'
-    model_dir.mkdir(parents=True, exist_ok=True)
+    results_dir = 'ventral_results'
+    model_dir  = 'ventral_models'
+    fig_dir = 'ventral_figures'
 
-    results_dir_ = Path(config.results_dir)
-    results_dir = results_dir_ / 'ventral'
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    fig_dir_ = Path(config.fig_dir)
-    fig_dir = fig_dir_ / 'ventral'
-    fig_dir.mkdir(parents=True, exist_ok=True)
     dir_list = [model_dir, results_dir, fig_dir]
     for directory in dir_list:
         if not os.path.exists(directory):
