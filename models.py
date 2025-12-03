@@ -360,14 +360,14 @@ class RNNClassifier2stream(nn.Module):
         self.count_mode = kwargs['count_mode'] if 'count_mode' in kwargs.keys() else 'total'
 
         self.head = kwargs['head'] if 'head' in kwargs.keys() else None         # 'relational' | 'counting'
-        self.count_K = self.max_num                                             # expected max count K
-        if self.head == 'counting' and self.count_mode == 'total':
-            self.n_shapes= self.map_classes 
-            # print(self.n_shapes)
+        self.count_K = self.max_num   
+        self.n_shapes= self.map_classes   
+        if self.task_type == 'min':
+            self.output_size = int(self.max_num//2) 
+        elif self.head == 'counting' and self.count_mode == 'total':
             self.output_size = int(self.max_num - self.min_num) + 1
             # print(self.output_size)
         elif self.head == 'counting' and self.count_mode == 'per_shape':
-            self.n_shapes= self.map_classes 
             self.output_size = int(self.count_K) + 1
             #print('Per-shape counting with n_shapes:', self.n_shapes, 'and count_K:', self.count_K)
 

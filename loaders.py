@@ -114,7 +114,7 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
     random.shuffle(half_idx)
 
     ### NUMBER LABEL ###
-    if config.task_type in ['min', 'max'] and config.head == 'relational':  # relational enumeration tasks
+    if config.task_type in ['min', 'max']:  # relational enumeration tasks.   and config.head == 'relational'
         num_field = 'numerosity_min' if config.task_type == 'min' else 'numerosity_max'
         count_num = torch.tensor(dataset[num_field].values).long().to(config.device)
         dist_num = torch.zeros_like(count_num).long().to(config.device)
@@ -156,7 +156,7 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
             dist_num = torch.zeros_like(count_num).long().to(config.device)
     # Number labels should start at zero
     #if config.task_type in ['min', 'max']:
-    if config.head == 'relational' and config.task_type in ['min', 'max']:
+    if  config.task_type in ['min', 'max']: #config.head == 'relational' and
         min_label = count_num.min()
         count_num = count_num - min_label
         print(f'Adjusted count_num labels to start at 0 by subtracting min label {min_label}. New range {count_num.min()}-{count_num.max()}')
