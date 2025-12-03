@@ -34,7 +34,6 @@ import torch.optim as optim
 from torch.utils.data import random_split
 from utils import Timer
 from pathlib import Path
-from config import get_config
 
 # from ray import tune
 # from ray.tune import CLIReporter
@@ -67,7 +66,7 @@ def align_outputs_targets(pred, target, config):
         cols = [0] + list(config.train_shapes)      # distractor + active shapes
         return pred[:, cols], target[:, cols]
     elif config.multiclass: 
-        return pred[:, config.train_shapes], target[:, config.train_shapes] 
+        return pred, target[:, config.train_shapes] 
     else: 
         return pred[:, TRAIN_SHAPES], target[:, TRAIN_SHAPES]
 
@@ -524,7 +523,7 @@ def get_dataframe(size, shapes_set, config, lums):
     transform = 'logpolar_' if config.logpolar else f'gw6_'
     # fname_gw = f'{home}/toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}_{challenge}_grid{config.grid}_policy-cheat+jitter_lum{lums}_{transform}12_{size}.pkl'
     # fname_gw = f'{home}/toysets/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{samee}_{challenge}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}12_{size}'
-    fname_gw = f'{home}/datasets/image_sets_min_max/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{distinctiveness}_{challenge}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}{n_glimpses}_{size}'
+    fname_gw = f'{home}/datasets/image_sets_min_max/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{distinctiveness}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}{n_glimpses}_{size}'
     
     if os.path.exists(fname_gw+'.nc'):
         print(f'Loading saved dataset {fname_gw}.nc')
@@ -536,7 +535,7 @@ def get_dataframe(size, shapes_set, config, lums):
     else:
         try:
             transform = 'polar_'
-            fname_gw = f'{home}/datasets/image_sets_min_max/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{distinctiveness}_{challenge}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}{n_glimpses}_{size}'
+            fname_gw = f'{home}/datasets/image_sets_min_max/num{min_num}-{max_num}_nl-{noise_level}_{shapes}{distinctiveness}_grid{config.grid}_policy-{config.policy}_lum{lums}_{transform}{n_glimpses}_{size}'
             data = xr.open_dataset(fname_gw+'.nc')
         except:
             print(f'{fname_gw} does not exist. Exiting.')

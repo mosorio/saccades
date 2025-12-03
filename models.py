@@ -25,7 +25,8 @@ def choose_model(config, model_dir):
 
     n_shapes = 2 if config.same and config.sort else 25 # 20 or 25
     if config.ventral is not None:
-        ventral = model_dir + '/ventral/' + config.ventral
+        ventral = config.ventral
+        #ventral = model_dir + '/ventral/' + config.ventral
     else:
         ventral = None
     finetune = True if 'finetune' in model_type else False
@@ -255,8 +256,8 @@ class PretrainedVentral(nn.Module):
             x = xy
             shape_pred = None
         
-        num, pix, map_, hidden, premap, penult = self.rnn(x, hidden)
-        return num, shape_pred, map_, hidden, premap, penult 
+        num, pix, map_, hidden, premap, penult, per_shape_scores  = self.rnn(x, hidden)
+        return num, shape_pred, map_, hidden, premap, penult, per_shape_scores 
     
     
 # class CountingHead(nn.Module):
