@@ -66,6 +66,7 @@ def get_config():
     parser.add_argument('--task_type', type=str, default='count')
     parser.add_argument('--head', type=str, default='relational', choices=['relational', 'counting'])
     parser.add_argument('--count_mode', type=str, default='total', choices=['total', 'per_shape'], help='How the counting head aggregates maps.')
+    parser.add_argument('--map_mode', type=str, default='both', choices=['bce', 'ce', 'both'], help='Loss function to use for map prediction.')
 
     parser.add_argument('--no_solarize', action='store_true', default=False)
     parser.add_argument('--n_glimpses', type=int, default=None, help='How long is each glimpse sequence.')
@@ -112,8 +113,8 @@ def get_config():
     parser.add_argument('--learn_shape', action='store_true', default=False, help='for the parametric shape rep, whether to additional train to produce symbolic shape labels')
     parser.add_argument('--wd', type=float, default=0) # 1e-6
     parser.add_argument('--lr', type=float, default=0.1)
-    parser.add_argument('--map_neg_w', type=float, default=0.1, help='Weight for absent shape channels in the map loss.')
-    parser.add_argument('--map_focal_gamma', type=float, default=2.0, help='Focal loss gamma for the per-shape map BCE.')
+    # parser.add_argument('--map_neg_w', type=float, default=0.1, help='Weight for absent shape channels in the map loss.')
+    # parser.add_argument('--map_focal_gamma', type=float, default=2.0, help='Focal loss gamma for the per-shape map BCE.')
 
     # parser.add_argument('--n_iters', type=int, default=1, help='how many times the rnn should loop through sequence')
     # parser.add_argument('--small_weights', action='store_true', default=False)  # not implemented
