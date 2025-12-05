@@ -64,15 +64,21 @@ class Trainer():
         self.config = config
         self.current_map_f1 = 0
         self.head_mode = getattr(config, 'head', 'relational')
-        self.n_shapes = getattr(config, 'map_shape_count', 8)
+        self.n_shapes = getattr(config, 'map_shape_count', 8) + 1
         self.count_mode = getattr(config, 'count_mode', 'total') 
-        self.map_neg_w = getattr(config, 'map_neg_w', 0.1)
-        self.map_focal_gamma = getattr(config, 'map_focal_gamma', 2.0)
+        # self.map_neg_w = getattr(config, 'map_neg_w', 0.1)
+        # self.map_focal_gamma = getattr(config, 'map_focal_gamma', 2.0)
+        self.map_mode = getattr(config, 'map_mode', 'bce')  
         #self.n_shapes = getattr(config, 'max_num', 8)
 
         # Criteria for counting head (per-class CE)
         self.criterion_count_ce = nn.CrossEntropyLoss()
         self.criterion_count_ce_noreduce = nn.CrossEntropyLoss(reduction='none')
+
+        # Criteria for map head (per-shape BCE)
+        self.criterion_bce_map = nn.BCEWithLogitsLoss()
+        self.criterion_bce_map_noreduce = nn.BCEWithLogitsLoss(reduction='none')
+        
 
         # Set up optimizer and scheduler
         if config.opt == 'SGD':
@@ -202,22 +208,47 @@ class Trainer():
             preds = num_logits.argmax(dim=1)
             acc = (preds == total_targets).float().mean().item() * 100.0
         return loss, acc, preds
-    
+
     # def _per_shape_map_bce_and_f1(self, map_logits, map_targets):
-    #     B, S, M = map_logits.shape
+    #     neg_w = self.map_neg_w
+    #     focal_gamma = self.map_focal_gamma
 
-    #     # print('map_logits shape:', map_logits.shape)
-    #     # reuse your existing weighted BCE
-    #     loss = self.criterion_bce_count(
-    #         map_logits.view(B*S, M),
-    #         map_targets.view(B*S, M).float()
-    #     )
-    #     per_elem = self.criterion_bce_count_noreduce(
-    #         map_logits.view(B*S, M),
-    #         map_targets.view(B*S, M).float()
-    #     )  # [B*S, M]
+    #     B, S, M = map_logits.shape # B=batch, S=shapes, M=map cells
 
-    #     per_shape_loss = per_elem.mean(dim=1).view(B, S).mean(dim=0)
+    #     # elementwise BCE (no reduction) and reshape to [B,S,M]
+    #     per_elem = self.criterion_bce_count_noreduce(                  
+    #         map_logits.view(B * S, M),
+    #         map_targets.view(B * S, M).float()
+    #     ).view(B, S, M)  
+
+    #     present = (map_targets.sum(dim=2) > 0).float()                 # [B,S]  (1 if present, 0 if absent)
+    #     w_shape = torch.where(present > 0, 1.0, neg_w)                 # [B,S] assigns weight 1.0 to present shapes and a small neg_w to absent shapes.
+    #     w = w_shape.unsqueeze(-1)                                      # [B,S,1] broadcast across cells
+
+    #     if focal_gamma and focal_gamma > 0.0:
+    #         #present_mask = (present > 0).unsqueeze(-1).float()   # [B,S,1]
+    #         p = torch.sigmoid(map_logits)                              # [B,S,M] predicted probabilities   
+    #         y = map_targets.float()
+    #         pt = torch.where(y > 0.5, p, 1.0 - p)                      # [B,S,M] the model’s probability of the true label per cell
+    #         focal_w = (1.0 - pt).clamp_min(0).pow(focal_gamma)         # [B,S,M] down-weights easy cells (pt≈1) and up-weights hard cells (pt≈0) (1 - pt)^gamma
+    #         per_elem = per_elem * focal_w                              # apply focal modulation
+    #         #per_elem = per_elem * torch.where(present_mask > 0, focal_w, 1.0)
+
+    #     denom = (w.sum() * M).clamp_min(1e-8)                          # total effective weight across all cells
+    #     loss = (per_elem * w).sum() / denom                            # scalar
+
+    #     per_shape_weight = (w_shape.sum(dim=0) * M).clamp_min(1e-8)    # [S]
+    #     per_shape_loss = (per_elem * w).sum(dim=(0, 2)) / per_shape_weight
+
+    #     present_mask = (present > 0).unsqueeze(-1).float()             # [B,S,1]
+    #     absent_mask  = 1.0 - present_mask                              # [B,S,1]
+
+    #     # Unweighted subset averages (useful to see each subset’s raw difficulty)
+    #     denom_present = (present.sum() * M).clamp_min(1e-8)            # scalar
+    #     denom_absent  = (((B*S) - present.sum()) * M).clamp_min(1e-8)
+
+    #     present_loss = (per_elem * present_mask).sum() / denom_present 
+    #     absent_loss  = (per_elem * absent_mask ).sum() / denom_absent  
 
     #     with torch.no_grad():
     #         preds = (torch.sigmoid(map_logits) > 0.5).long()
@@ -234,66 +265,89 @@ class Trainer():
     #         strict_correct = (preds == map_targets).all(dim=2).float().mean(dim=0).cpu().numpy()
             
 
-    #     return loss, map_f1, per_shape_loss, per_shape_acc, strict_correct, recall.cpu().numpy(), specificity.cpu().numpy(), precision.cpu().numpy()
-    
-    def _per_shape_map_bce_and_f1(self, map_logits, map_targets):
-        neg_w = self.map_neg_w
-        focal_gamma = self.map_focal_gamma
+    #     return loss, map_f1, per_shape_loss, per_shape_acc, strict_correct, recall.cpu().numpy(), specificity.cpu().numpy(), precision.cpu().numpy(), present_loss.item(), absent_loss.item()
 
-        B, S, M = map_logits.shape # B=batch, S=shapes, M=map cells
 
-        # elementwise BCE (no reduction) and reshape to [B,S,M]
-        per_elem = self.criterion_bce_count_noreduce(                  
-            map_logits.view(B * S, M),
-            map_targets.view(B * S, M).float()
-        ).view(B, S, M)  
+    def _map_loss_bce_ce_and_f1(self, map_logits, map_targets, lambda_bce=1.0, lambda_ce=1.0):
+        """
+        map_logits : [B, C, M]  (C = n_shapes + 1, including 'absent')
+        map_targets: [B, C, M]  0/1 one-hot over (shapes + absent) per slot
+        lambda_*   : weights when mode == "both"
+        """
+        B, C, M = map_logits.shape
 
-        present = (map_targets.sum(dim=2) > 0).float()                 # [B,S]  (1 if present, 0 if absent)
-        w_shape = torch.where(present > 0, 1.0, neg_w)                 # [B,S] assigns weight 1.0 to present shapes and a small neg_w to absent shapes.
-        w = w_shape.unsqueeze(-1)                                      # [B,S,1] broadcast across cells
+        # ---------- BCE ----------
+        # elementwise BCE, shape [B, C, M]
+        per_elem = self.criterion_bce_map_noreduce(map_logits.view(B * C, M), 
+                                                   map_targets.view(B * C, M).float()).view(B, C, M)  
 
-        if focal_gamma and focal_gamma > 0.0:
-            #present_mask = (present > 0).unsqueeze(-1).float()   # [B,S,1]
-            p = torch.sigmoid(map_logits)                              # [B,S,M] predicted probabilities   
-            y = map_targets.float()
-            pt = torch.where(y > 0.5, p, 1.0 - p)                      # [B,S,M] the model’s probability of the true label per cell
-            focal_w = (1.0 - pt).clamp_min(0).pow(focal_gamma)         # [B,S,M] down-weights easy cells (pt≈1) and up-weights hard cells (pt≈0) (1 - pt)^gamma
-            per_elem = per_elem * focal_w                              # apply focal modulation
-            #per_elem = per_elem * torch.where(present_mask > 0, focal_w, 1.0)
+        # simple mean BCE
+        bce_loss = per_elem.mean()
 
-        denom = (w.sum() * M).clamp_min(1e-8)                          # total effective weight across all cells
-        loss = (per_elem * w).sum() / denom                            # scalar
+        # per-shape BCE loss: average over batch and slots
+        per_shape_loss = per_elem.mean(dim=(0, 2))  # [C]
 
-        per_shape_weight = (w_shape.sum(dim=0) * M).clamp_min(1e-8)    # [S]
-        per_shape_loss = (per_elem * w).sum(dim=(0, 2)) / per_shape_weight
+        present = (map_targets.sum(dim=2) > 0).float()  # [B,C]
+        present_mask = (present > 0).unsqueeze(-1).float()  # [B,C,1]
+        absent_mask  = 1.0 - present_mask
 
-        present_mask = (present > 0).unsqueeze(-1).float()             # [B,S,1]
-        absent_mask  = 1.0 - present_mask                              # [B,S,1]
+        denom_present = (present.sum() * M).clamp_min(1e-8)
+        denom_absent  = (((B * C) - present.sum()) * M).clamp_min(1e-8)
 
-        # Unweighted subset averages (useful to see each subset’s raw difficulty)
-        denom_present = (present.sum() * M).clamp_min(1e-8)            # scalar
-        denom_absent  = (((B*S) - present.sum()) * M).clamp_min(1e-8)
+        present_loss = (per_elem * present_mask).sum() / denom_present
+        absent_loss  = (per_elem * absent_mask ).sum() / denom_absent
 
-        present_loss = (per_elem * present_mask).sum() / denom_present 
-        absent_loss  = (per_elem * absent_mask ).sum() / denom_absent  
+        # ---------- CE ----------
+        if self.map_mode in ("ce", "both"):
+            ce_targets = map_targets.argmax(dim=1)  # [B,M], values in 0..C-1
 
+            # logits: [B,M,C] -> [B*M, C]
+            logits_flat  = map_logits.permute(0, 2, 1).reshape(B * M, C)
+            targets_flat = ce_targets.reshape(B * M)
+
+            ce_loss_per_element = self.criterion_count_ce_noreduce(logits_flat, targets_flat)
+            ce_loss = ce_loss_per_element.mean()
+
+        # ---------- combine losses ----------
+        if self.map_mode == "bce":
+            total_loss = bce_loss
+        elif self.map_mode == "ce":
+            total_loss = ce_loss
+        else:  # "both"
+            total_loss = lambda_bce * bce_loss + lambda_ce * ce_loss
+
+        # ---------- metrics from BCE ----------
         with torch.no_grad():
-            preds = (torch.sigmoid(map_logits) > 0.5).long()
+            probs = torch.sigmoid(map_logits)            # [B,C,M]
+            preds = (probs > 0.5).long()                 # binarised predictions
+
             tp = (preds * map_targets).sum(dim=(0, 2)).float()
             fp = (preds * (1 - map_targets)).sum(dim=(0, 2)).float()
             fn = ((1 - preds) * map_targets).sum(dim=(0, 2)).float()
             tn = ((1 - preds) * (1 - map_targets)).sum(dim=(0, 2)).float()
-            precision = tp / (tp + fp + 1e-8)           # how many predicted 1s were correct
-            recall    = tp / (tp + fn + 1e-8)           # how many 1s were hit
-            specificity = tn / (tn + fp + 1e-8)         # how many 0s were hit
-            f1_per_s  = 2 * precision * recall / (precision + recall + 1e-8)
-            map_f1 = f1_per_s.mean().item() * 100.0
+
+            precision   = tp / (tp + fp + 1e-8)
+            recall      = tp / (tp + fn + 1e-8)
+            specificity = tn / (tn + fp + 1e-8)
+            f1_per_c    = 2 * precision * recall / (precision + recall + 1e-8)
+
+            map_f1 = f1_per_c.mean().item() * 100.0
+
             per_shape_acc = (preds == map_targets).float().mean(dim=(0, 2)).cpu().numpy()
             strict_correct = (preds == map_targets).all(dim=2).float().mean(dim=0).cpu().numpy()
-            
 
-        return loss, map_f1, per_shape_loss, per_shape_acc, strict_correct, recall.cpu().numpy(), specificity.cpu().numpy(), precision.cpu().numpy(), present_loss.item(), absent_loss.item()
-
+        return (
+            total_loss,
+            map_f1,
+            per_shape_loss,
+            per_shape_acc,
+            strict_correct,
+            recall.cpu().numpy(),
+            specificity.cpu().numpy(),
+            precision.cpu().numpy(),
+            present_loss.item(),
+            absent_loss.item(),
+        )
 
     def train_network(self):
         config = self.config
@@ -335,10 +389,10 @@ class Trainer():
         
         train_percls_loss        = np.zeros((n_epochs + 1, self.n_shapes))
         train_percls_acc         = np.zeros((n_epochs + 1, self.n_shapes))
-        train_percls_strict_acc  = np.zeros((n_epochs + 1, self.n_shapes))
-        train_percls_precision   = np.zeros((n_epochs + 1, self.n_shapes))
-        train_percls_recall      = np.zeros((n_epochs + 1, self.n_shapes))
-        train_percls_specificity = np.zeros((n_epochs + 1, self.n_shapes))
+        # train_percls_strict_acc  = np.zeros((n_epochs + 1, self.n_shapes))
+        # train_percls_precision   = np.zeros((n_epochs + 1, self.n_shapes))
+        # train_percls_recall      = np.zeros((n_epochs + 1, self.n_shapes))
+        # train_percls_specificity = np.zeros((n_epochs + 1, self.n_shapes))
         train_present_loss      = np.zeros((n_epochs + 1,))
         train_absent_loss       = np.zeros((n_epochs + 1,))
 
@@ -367,10 +421,10 @@ class Trainer():
 
         test_percls_loss        = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
         test_percls_acc         = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
-        test_percls_strict_acc  = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
-        test_percls_precision   = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
-        test_percls_recall      = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
-        test_percls_specificity = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
+        # test_percls_strict_acc  = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
+        # test_percls_precision   = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
+        # test_percls_recall      = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
+        # test_percls_specificity = [np.zeros((n_epochs + 1, self.n_shapes)) for _ in range(n_test_sets)]
         test_present_loss      = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
         test_absent_loss       = [np.zeros((n_epochs + 1,)) for _ in range(n_test_sets)]
 
@@ -397,10 +451,10 @@ class Trainer():
 
             train_percls_acc[0]     = tr_percls_acc
             train_percls_loss[0]    = tr_percls_loss 
-            train_percls_strict_acc[0]  = tr_percls_map_strict
-            train_percls_precision[0]   = tr_percls_map_prec
-            train_percls_recall[0]      = tr_percls_map_recall
-            train_percls_specificity[0] = tr_percls_map_spec
+            # train_percls_strict_acc[0]  = tr_percls_map_strict
+            # train_percls_precision[0]   = tr_percls_map_prec
+            # train_percls_recall[0]      = tr_percls_map_recall
+            # train_percls_specificity[0] = tr_percls_map_spec
             train_present_loss[0]       = tr_present_loss
             train_absent_loss[0]        = tr_absent_loss
 
@@ -436,10 +490,10 @@ class Trainer():
 
                 test_percls_acc[ts][0]     = te_percls_acc
                 test_percls_loss[ts][0]    = te_percls_loss
-                test_percls_strict_acc[ts][0]  = te_percls_map_strict
-                test_percls_precision[ts][0]   = te_percls_map_prec
-                test_percls_recall[ts][0]      = te_percls_map_recall
-                test_percls_specificity[ts][0] = te_percls_map_spec
+                # test_percls_strict_acc[ts][0]  = te_percls_map_strict
+                # test_percls_precision[ts][0]   = te_percls_map_prec
+                # test_percls_recall[ts][0]      = te_percls_map_recall
+                # test_percls_specificity[ts][0] = te_percls_map_spec
                 test_present_loss[ts][0]       = te_present_loss
                 test_absent_loss[ts][0]        = te_absent_loss
 
@@ -541,10 +595,10 @@ class Trainer():
 
                 train_percls_acc[ep]     = tr_percls_acc
                 train_percls_loss[ep]    = tr_percls_loss
-                train_percls_strict_acc[ep]  = tr_percls_map_strict
-                train_percls_precision[ep]   = tr_percls_map_prec
-                train_percls_recall[ep]      = tr_percls_map_recall
-                train_percls_specificity[ep] = tr_percls_map_spec
+                # train_percls_strict_acc[ep]  = tr_percls_map_strict
+                # train_percls_precision[ep]   = tr_percls_map_prec
+                # train_percls_recall[ep]      = tr_percls_map_recall
+                # train_percls_specificity[ep] = tr_percls_map_spec
                 train_present_loss[ep]       = tr_present_loss
                 train_absent_loss[ep]        = tr_absent_loss
 
@@ -578,10 +632,10 @@ class Trainer():
 
                     test_percls_acc[ts][ep]     = te_percls_acc
                     test_percls_loss[ts][ep]    = te_percls_loss
-                    test_percls_strict_acc[ts][ep]  = te_percls_map_strict
-                    test_percls_precision[ts][ep]   = te_percls_map_prec
-                    test_percls_recall[ts][ep]      = te_percls_map_recall
-                    test_percls_specificity[ts][ep] = te_percls_map_spec
+                    # test_percls_strict_acc[ts][ep]  = te_percls_map_strict
+                    # test_percls_precision[ts][ep]   = te_percls_map_prec
+                    # test_percls_recall[ts][ep]      = te_percls_map_recall
+                    # test_percls_specificity[ts][ep] = te_percls_map_spec
                     test_present_loss[ts][ep]       = te_present_loss
                     test_absent_loss[ts][ep]        = te_absent_loss
 
@@ -720,10 +774,8 @@ class Trainer():
 
         if counting:
             per_shape_stats = (
-                train_percls_loss, train_percls_acc, train_percls_strict_acc,
-                train_percls_precision, train_percls_recall, train_percls_specificity, train_present_loss, train_absent_loss,
-                test_percls_loss, test_percls_acc, test_percls_strict_acc,
-                test_percls_precision, test_percls_recall, test_percls_specificity, test_present_loss, test_absent_loss
+                train_percls_loss, train_percls_acc, train_present_loss, train_absent_loss,
+                test_percls_loss, test_percls_acc, test_present_loss, test_absent_loss
             )
             results_list = res_tr + res_te + [per_shape_stats]
         else:
@@ -999,8 +1051,8 @@ class Trainer():
 
                 # MAP BCE
                 (map_loss, map_f1, per_shape_loss, per_shape_map_acc, per_shape_map_strict_acc, per_shape_precision, 
-                 per_shape_recall, per_shape_spec, present_loss, absent_loss) = self._per_shape_map_bce_and_f1(last_map_logits, all_loc) 
-
+                 per_shape_recall, per_shape_spec, present_loss, absent_loss) = self._map_loss_bce_ce_and_f1(last_map_logits, all_loc) 
+                
                 # print('map_loss', map_loss)
                 # print('per_shape_loss', per_shape_loss)
 
@@ -1049,6 +1101,8 @@ class Trainer():
                 batch_results['correct']         = strict_correct.astype(bool)
                 batch_results['predicted']       = pred_counts.detach().cpu().tolist()
                 batch_results['true']            = target.to(device).detach().cpu().tolist()
+                batch_results['map logits']      = last_map_logits.detach().cpu().numpy().tolist()
+                batch_results['map targets']     = all_loc.to(device).detach().cpu().numpy().tolist()
                 # batch_results['loss']            = per_sample_ce.detach().cpu().numpy()   # per-sample CE
                 # batch_results['full map loss']   = -1
                 # batch_results['count map loss']  = -1
@@ -1349,7 +1403,7 @@ class Trainer():
             if counting:
                 # --- MAP loss: BCE on per-shape maps [B,S,M] ---
                 (map_loss, map_f1, per_shape_loss, per_shape_map_acc, per_shape_map_strict_acc, per_shape_precision, 
-                per_shape_recall, per_shape_spec, present_loss, absent_loss) = self._per_shape_map_bce_and_f1(last_map_logits, locations)
+                per_shape_recall, per_shape_spec, present_loss, absent_loss) = self._map_loss_bce_ce_and_f1(last_map_logits, locations)
 
                 # --- NUM loss: CE on counts ---
                 if self.count_mode == 'total':  # total counts [B]                     

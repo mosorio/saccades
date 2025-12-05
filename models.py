@@ -258,27 +258,6 @@ class PretrainedVentral(nn.Module):
         
         num, pix, map_, hidden, premap, penult, per_shape_scores  = self.rnn(x, hidden)
         return num, shape_pred, map_, hidden, premap, penult, per_shape_scores 
-    
-    
-# class CountingHead(nn.Module):
-#     def __init__(self, map_dim, n_shapes, mode='total'):
-#         super().__init__()
-#         self.map_dim = map_dim          # grid**2 (already flattened map)
-#         self.n_shapes = n_shapes        # len(train_shapes) (+1 if distractor)
-#         self.mode = mode                # 'total' or 'per_shape'
-
-#         self.map_project = nn.Linear(map_dim, n_shapes, bias=False)
-#         self.total_fc = nn.Linear(n_shapes, 1)
-
-#     def forward(self, map_logits_flat):
-#         # map_logits_flat: [B, map_dim]
-#         per_shape_logits = self.map_project(map_logits_flat)      # [B, n_shapes]
-
-#         if self.mode == 'total':
-#             total_logits = self.total_fc(per_shape_logits)        # [B, 1]
-#             return per_shape_logits, total_logits
-#         else:
-#             return per_shape_logits, per_shape_logits
 
 class CountingHead(nn.Module):
     def __init__(self, hidden_dim, map_dim, n_shapes, n_counts, mode='total'):
@@ -297,7 +276,7 @@ class CountingHead(nn.Module):
         self.total_fc = None
         if mode == 'total':
             assert self.n_counts is not None and self.n_counts > 1, "Need K+1 classes for CE."
-            self.total_fc = nn.Linear(map_dim, self.n_counts, bias=True)
+            self.total_fc = nn.Linear(map_dim * n_shapes, self.n_counts, bias=True)
         else:
             print("Using per-shape counting head.")
             # Per-shape counting head: each shape's map -> its own K+1 logits
@@ -314,9 +293,9 @@ class CountingHead(nn.Module):
         # ----- Per-shape count logits: [B, S, K+1]
         if self.mode == 'total':
             # total_logits = self.total_fc(per_shape_scores)  # [B, 1]
-            joint_map = per_shape_maps.sum(dim=1)                       # [B, M]
-            total_logits = self.total_fc(joint_map)
-            return per_shape_maps, joint_map, total_logits
+            #joint_map = per_shape_maps.sum(dim=1)                       # [B, M]
+            total_logits = self.total_fc(maps_flat)
+            return per_shape_maps, maps_flat, total_logits
             # return per_shape_maps, per_shape_scores, total_logits
         else:
             print("Computing per-shape count logits.")
@@ -361,7 +340,7 @@ class RNNClassifier2stream(nn.Module):
 
         self.head = kwargs['head'] if 'head' in kwargs.keys() else None         # 'relational' | 'counting'
         self.count_K = self.max_num   
-        self.n_shapes= self.map_classes   
+        self.n_shapes = self.map_classes + 1  
         if self.task_type == 'min':
             self.output_size = int(self.max_num//2) 
         elif self.head == 'counting' and self.count_mode == 'total':

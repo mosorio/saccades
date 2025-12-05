@@ -48,7 +48,7 @@ def main(config):
     # model_dir = 'models/toy/letters'
     # results_dir = 'results/toy/letters'
     # fig_dir = 'figures/toy/letters'
-    suffix = f"min{config.min_num}_max{config.max_num}_{config.n_glimpses}_{config.shape_input}_{config.head}_{config.task_type}_{config.count_mode}_seed{config.seed}_weighting{config.map_neg_w}_focalGamma{config.map_focal_gamma}"
+    suffix = f"min{config.min_num}_max{config.max_num}_{config.n_glimpses}_{config.shape_input}_{config.head}_{config.task_type}_{config.count_mode}_seed{config.seed}_map_mode{config.map_mode}"
     results_dir = f"results_{suffix}/logpolar"
     model_dir  = f"models_{suffix}/logpolar"
     fig_dir = f"figures_{suffix}/logpolar"
@@ -118,10 +118,8 @@ def main(config):
     (test_count_map_loss, test_dist_map_loss, test_full_map_loss) = test_map_losses
 
     if config.head == 'counting':
-        (train_percls_loss, train_percls_acc, train_percls_strict_acc,
-        train_percls_precision, train_percls_recall, train_percls_specificity, train_present_loss, train_absent_loss,
-        test_percls_loss, test_percls_acc, test_percls_strict_acc,
-        test_percls_precision, test_percls_recall, test_percls_specificity, test_present_loss, test_absent_loss) = per_shape_stats
+        (train_percls_loss, train_percls_acc, train_present_loss, train_absent_loss,
+        test_percls_loss, test_percls_acc, test_present_loss, test_absent_loss) = per_shape_stats
 
     # train_loss, train_acc, train_num_loss, train_shape_loss, train_full_map_loss, train_count_map_loss, test_loss, test_acc, test_num_loss, test_shape_loss, test_full_map_loss, test_count_map_loss, conf, test_results = results
     test_results.to_pickle(f'{results_dir}/test_results_{base_name}.pkl')
@@ -144,10 +142,10 @@ def main(config):
     if config.head == 'counting':
         df_train['percls loss'] = list(train_percls_loss)
         df_train['percls acc'] = list(train_percls_acc)
-        df_train['percls strict acc'] = list(train_percls_strict_acc)
-        df_train['percls precision'] = list(train_percls_precision)
-        df_train['percls recall'] = list(train_percls_recall)
-        df_train['percls specificity'] = list(train_percls_specificity)
+        # df_train['percls strict acc'] = list(train_percls_strict_acc)
+        # df_train['percls precision'] = list(train_percls_precision)
+        # df_train['percls recall'] = list(train_percls_recall)
+        # df_train['percls specificity'] = list(train_percls_specificity)
         df_train['present loss'] = train_present_loss
         df_train['absent loss'] = train_absent_loss
 
@@ -178,10 +176,10 @@ def main(config):
         if config.head == 'counting':
             df_test_list[ts]['percls loss'] = list(test_percls_loss[ts])
             df_test_list[ts]['percls acc'] = list(test_percls_acc[ts])
-            df_test_list[ts]['percls strict acc'] = list(test_percls_strict_acc[ts])
-            df_test_list[ts]['percls precision'] = list(test_percls_precision[ts])
-            df_test_list[ts]['percls recall'] = list(test_percls_recall[ts])
-            df_test_list[ts]['percls specificity'] = list(test_percls_specificity[ts])
+            # df_test_list[ts]['percls strict acc'] = list(test_percls_strict_acc[ts])
+            # df_test_list[ts]['percls precision'] = list(test_percls_precision[ts])
+            # df_test_list[ts]['percls recall'] = list(test_percls_recall[ts])
+            # df_test_list[ts]['percls specificity'] = list(test_percls_specificity[ts])
             df_test_list[ts]['present loss'] = test_present_loss[ts]
             df_test_list[ts]['absent loss'] = test_absent_loss[ts]
 

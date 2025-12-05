@@ -203,14 +203,15 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
         loc_idx[loc_idx == 9] = 8    # map index 9 to 8
 
         # print('loc_idx:', loc_idx[0])
+        # print('loc_idx shape:', loc_idx.shape)
+        #   0 -> absence (no shape), 1..S -> shape IDs 
         n_shapes = (loc_idx.max().item())
-        mask = (loc_idx > 0)                                   # True where a shape exists
-        shape_ids = torch.clamp(loc_idx - 1, min=0)            # shift so shape 1→0, etc.
-        one_hot = torch.nn.functional.one_hot(shape_ids, num_classes=n_shapes).float()  # [B, grid, n_shapes]
-        one_hot *= mask.unsqueeze(-1).float()                          # zero out background
+        #mask = (loc_idx > 0)                                   # True where a shape exists
+        #shape_ids = torch.clamp(loc_idx - 1, min=0)            # shift so shape 1→0, etc.
+        one_hot = torch.nn.functional.one_hot(loc_idx, num_classes=n_shapes+1).float()  # [B, grid, n_shapes]
+        #one_hot *= mask.unsqueeze(-1).float()                          # zero out background
         per_shape_map = one_hot.permute(0, 2, 1)                       # [B, n_shapes, grid]
-        count_loc = per_shape_map          # use per-shape mask as the map target
-        # print('count_loc:', count_loc[0])
+        count_loc = per_shape_map          
         all_loc = per_shape_map.clone()   
 
     # if config.head == 'counting':
