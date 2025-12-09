@@ -1101,8 +1101,14 @@ class Trainer():
                 batch_results['correct']         = strict_correct.astype(bool)
                 batch_results['predicted']       = pred_counts.detach().cpu().tolist()
                 batch_results['true']            = target.to(device).detach().cpu().tolist()
-                batch_results['map logits']      = last_map_logits.detach().cpu().numpy().tolist()
-                batch_results['map targets']     = all_loc.to(device).detach().cpu().numpy().tolist()
+                if ep == 0 or ep == self.config.n_epochs - 1:
+                    batch_results['map logits'] = last_map_logits.detach().cpu().tolist()
+                    batch_results['map targets'] = all_loc.detach().cpu().tolist()
+                else:
+                    batch_results['map logits'] = None
+                    batch_results['map targets'] = None
+                # batch_results['map logits']      = last_map_logits.detach().cpu().numpy().tolist()
+                # batch_results['map targets']     = all_loc.to(device).detach().cpu().numpy().tolist()
                 # batch_results['loss']            = per_sample_ce.detach().cpu().numpy()   # per-sample CE
                 # batch_results['full map loss']   = -1
                 # batch_results['count map loss']  = -1
