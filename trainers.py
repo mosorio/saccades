@@ -94,6 +94,8 @@ class Trainer():
         self.current_map_f1 = 0
         self.head_mode = getattr(config, 'head', 'relational')
         self.n_shapes = getattr(config, 'map_shape_count', 8) + 1
+        self.n_max= config.max_num
+        self.n_min= config.min_num
         self.count_mode = getattr(config, 'count_mode', 'total') 
         # self.map_neg_w = getattr(config, 'map_neg_w', 0.1)
         # self.map_focal_gamma = getattr(config, 'map_focal_gamma', 2.0)
@@ -106,15 +108,6 @@ class Trainer():
         self.map_slots =  config.grid **2
         #self.n_shapes = getattr(config, 'max_num', 8)
 
-        pos_w = proxy_pos_weight(
-            map_slots=self.map_slots,
-            maxnum=config.max_num,
-            minnum=config.min_num,
-            K=self.n_shapes - 1
-        ).to(config.device)
-
-        print('Pos weight for map head:', pos_w)
-
         # Criteria for counting head (per-class CE)
         self.criterion_count_ce = nn.CrossEntropyLoss()
         self.criterion_count_ce_noreduce = nn.CrossEntropyLoss(reduction='none')
@@ -122,7 +115,6 @@ class Trainer():
         # Criteria for map head (per-shape BCE)
         self.criterion_bce_map = nn.BCEWithLogitsLoss()
         self.criterion_bce_map_noreduce = nn.BCEWithLogitsLoss(reduction='none')
-        self.criterion_bce_map_noreduce_pos_weights = nn.BCEWithLogitsLoss(pos_weight=pos_w, reduction='none')
 
         # Set up optimizer and scheduler
         if config.opt == 'SGD':
@@ -319,6 +311,16 @@ class Trainer():
         lambda_*   : weights when mode == "both"
         """
         B, C, M = map_logits.shape
+
+        pos_w = proxy_pos_weight(
+            map_slots=self.map_slots,
+            maxnum=self.n_max,
+            minnum=self.n_min,
+            K=self.n_shapes - 1
+        )
+        pos_weight = pos_w.view(1, C, 1).expand(B, C, M).reshape(B * C, M)
+
+        self.criterion_bce_map_noreduce_pos_weights = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction='none')
 
         # ---------- BCE ----------
         # elementwise BCE, shape [B, C, M]
