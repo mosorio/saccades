@@ -48,7 +48,7 @@ def main(config):
     # model_dir = 'models/toy/letters'
     # results_dir = 'results/toy/letters'
     # fig_dir = 'figures/toy/letters'
-    suffix = f"min{config.min_num}_max{config.max_num}_{config.n_glimpses}_{config.shape_input}_{config.head}_{config.task_type}_{config.count_mode}_seed{config.seed}_map_mode{config.map_mode}"
+    suffix = f"min{config.min_num}_max{config.max_num}_{config.n_glimpses}_{config.shape_input}_{config.head}_{config.task_type}_{config.count_mode}_seed{config.seed}_map_mode{config.map_mode}_bcew{config.bce_weight}_cew{config.ce_weight}_posw{config.pos_weight}"
     results_dir = f"results_{suffix}/logpolar"
     model_dir  = f"models_{suffix}/logpolar"
     fig_dir = f"figures_{suffix}/logpolar"

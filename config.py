@@ -66,7 +66,11 @@ def get_config():
     parser.add_argument('--task_type', type=str, default='count')
     parser.add_argument('--head', type=str, default='relational', choices=['relational', 'counting'])
     parser.add_argument('--count_mode', type=str, default='total', choices=['total', 'per_shape'], help='How the counting head aggregates maps.')
-    parser.add_argument('--map_mode', type=str, default='both', choices=['bce', 'ce', 'both'], help='Loss function to use for map prediction.')
+    parser.add_argument('--map_mode', type=str, default='both', choices=['bce', 'ce', 'both', 'bce_then_ce'], help='Loss function to use for map prediction.')
+    parser.add_argument('--bce_weight', type=float, default=1.0, help='Weight for BCE map loss when map_mode is both or bce_then_ce.')
+    parser.add_argument('--ce_weight', type=float, default=1.0, help='Weight for CE map loss when map_mode is both or bce_then_ce.')
+    parser.add_argument('--pos_weight', action='store_true', default=False, help='Whether to use positive weighting for the BCE map loss.')
+    parser.add_argument('--map_bce_pretrain_epochs', type=int, default=0, help='Epoch count for BCE-only warmup when map_mode=bce_then_ce.')
 
     parser.add_argument('--no_solarize', action='store_true', default=False)
     parser.add_argument('--n_glimpses', type=int, default=None, help='How long is each glimpse sequence.')

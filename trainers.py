@@ -57,6 +57,35 @@ def get_f1(map, locations, task_type='count'):
     f1 = 2*((precision * recall)/(precision + recall + eps))
     return f1.nanmean().item()
 
+def proxy_pos_weight(map_slots, maxnum, minnum, K):
+    eps = 1e-8
+    # expected average number of objects
+
+    ave_num = ((maxnum - minnum) + 1)/ 2.0
+    # print("Average number of objects:", ave_num)
+
+    # expected average positive count for each shape
+    ave_num_per_shape = ave_num / 2.0
+    # print("Average positive count for each shape:", ave_num_per_shape)
+
+    # compute shape-channel weight: (neg / pos)
+    neg_est = float(map_slots) - ave_num_per_shape
+    # print("Estimated negative count per shape channel:", neg_est)
+    pos_est = ave_num_per_shape
+    # print("Estimated positive count per shape channel:", pos_est)
+
+    base_shape_w = neg_est / (pos_est + eps)
+    # print("Base shape weight:", base_shape_w)
+    base_abs_w = pos_est / (neg_est + eps)
+    # print("Base absent weight:", base_abs_w)
+
+    # construct vector: [absence, shape1, shape2, ..., shapeK]
+    C = K + 1
+    pos_weight = torch.ones(C, dtype=torch.float32) * float(base_shape_w)
+    pos_weight[0] = float(base_abs_w)
+
+    return pos_weight
+
 class Trainer():
     def __init__(self, model, loaders, config):
         self.model = model
@@ -68,8 +97,23 @@ class Trainer():
         self.count_mode = getattr(config, 'count_mode', 'total') 
         # self.map_neg_w = getattr(config, 'map_neg_w', 0.1)
         # self.map_focal_gamma = getattr(config, 'map_focal_gamma', 2.0)
-        self.map_mode = getattr(config, 'map_mode', 'bce')  
+        self.map_mode = getattr(config, 'map_mode', 'bce') 
+        self.map_bce_pretrain_epochs = getattr(config, 'map_bce_pretrain_epochs', 0)
+        self.use_pos_weight = getattr(config, 'pos_weight', False)
+        self.bce_weight = getattr(config, 'bce_weight', 1.0)
+        self.ce_weight = getattr(config, 'ce_weight', 1.0)
+
+        self.map_slots =  config.grid **2
         #self.n_shapes = getattr(config, 'max_num', 8)
+
+        pos_w = proxy_pos_weight(
+            map_slots=self.map_slots,
+            maxnum=config.max_num,
+            minnum=config.min_num,
+            K=self.n_shapes - 1
+        ).to(config.device)
+
+        print('Pos weight for map head:', pos_w)
 
         # Criteria for counting head (per-class CE)
         self.criterion_count_ce = nn.CrossEntropyLoss()
@@ -78,7 +122,7 @@ class Trainer():
         # Criteria for map head (per-shape BCE)
         self.criterion_bce_map = nn.BCEWithLogitsLoss()
         self.criterion_bce_map_noreduce = nn.BCEWithLogitsLoss(reduction='none')
-        
+        self.criterion_bce_map_noreduce_pos_weights = nn.BCEWithLogitsLoss(pos_weight=pos_w, reduction='none')
 
         # Set up optimizer and scheduler
         if config.opt == 'SGD':
@@ -268,7 +312,7 @@ class Trainer():
     #     return loss, map_f1, per_shape_loss, per_shape_acc, strict_correct, recall.cpu().numpy(), specificity.cpu().numpy(), precision.cpu().numpy(), present_loss.item(), absent_loss.item()
 
 
-    def _map_loss_bce_ce_and_f1(self, map_logits, map_targets, lambda_bce=1.0, lambda_ce=1.0):
+    def _map_loss_bce_ce_and_f1(self, map_logits, map_targets):
         """
         map_logits : [B, C, M]  (C = n_shapes + 1, including 'absent')
         map_targets: [B, C, M]  0/1 one-hot over (shapes + absent) per slot
@@ -278,7 +322,13 @@ class Trainer():
 
         # ---------- BCE ----------
         # elementwise BCE, shape [B, C, M]
-        per_elem = self.criterion_bce_map_noreduce(map_logits.view(B * C, M), 
+        if self.use_pos_weight:
+            per_elem = self.criterion_bce_map_noreduce_pos_weights(
+                map_logits.view(B * C, M),
+                map_targets.view(B * C, M).float()
+            ).view(B, C, M)  
+        else:   
+            per_elem = self.criterion_bce_map_noreduce(map_logits.view(B * C, M), 
                                                    map_targets.view(B * C, M).float()).view(B, C, M)  
 
         # simple mean BCE
@@ -314,7 +364,7 @@ class Trainer():
         elif self.map_mode == "ce":
             total_loss = ce_loss
         else:  # "both"
-            total_loss = lambda_bce * bce_loss + lambda_ce * ce_loss
+            total_loss = self.bce_weight * bce_loss + self.ce_weight * ce_loss
 
         # ---------- metrics from BCE ----------
         with torch.no_grad():
