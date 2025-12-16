@@ -305,7 +305,7 @@ def compute_shape_matches(pred_shapes, true_shapes):
     return [jaccard(pred, true) for pred, true in zip(pred_shapes, true_shapes)]
 
 # put together the metrics and return the mean values in a dictionary
-def compute_map_metrics(map_logits:np.ndarray,target_map:np.ndarray) -> dict:
+def compute_map_metrics(map_logits:np.ndarray,target_map:np.ndarray, linkfunction=None) -> dict:
     """
     Compute various metrics for the predicted shape map against the target shape map.
     Parameters
@@ -314,6 +314,8 @@ def compute_map_metrics(map_logits:np.ndarray,target_map:np.ndarray) -> dict:
         The map logits of shape (B,S,M)
     target_map : np.ndarray
         The target shape map of shape (B,S,M)
+    linkfunction : function, optional
+        The link function to apply to the logits (default is None), can choose from None, softmax or sigmoid
     Returns
     -------
     dict
@@ -324,7 +326,16 @@ def compute_map_metrics(map_logits:np.ndarray,target_map:np.ndarray) -> dict:
         - per_shape_accuracies: dict, accuracy for each individual shape
         - shape_presence_jaccard: float, mean Jaccard index for the shape sets present in the predictions vs targets
     """
-    pred_shape_map = get_shape_map_from_logits(map_logits, linkfunction=softmax)
+
+    if linkfunction is None:
+        linkfunction = lambda x: x
+    elif linkfunction == "softmax":
+        linkfunction = softmax
+    elif linkfunction == "sigmoid":
+        linkfunction = elementwise_sigmoid
+    else:
+        raise ValueError(f"Unsupported linkfunction: {linkfunction}")
+    pred_shape_map = get_shape_map_from_logits(map_logits, linkfunction=linkfunction)
     shape_map_accuracies = compute_shape_map_accuracies(pred_shape_map, target_map)
 
     pred_shapes, _, _ = get_shape_prediction_from_map(pred_shape_map)
