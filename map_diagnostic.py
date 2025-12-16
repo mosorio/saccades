@@ -3,6 +3,7 @@ This module provides utility functions for computing the performance of the map 
 in predicting shapes at different spatial locations. 
 """
 import numpy as np
+from scipy.stats import norm
 
 def softmax(x, axis=None):
     # subtract max for numerical stability
@@ -161,8 +162,19 @@ def compute_shape_map_accuracies(pred_shape_map, target_shape_map):
         "per_shape_accuracies": per_shape_accuracies
     }
     
-from scipy.stats import norm
 def to_iterable(x):
+    """
+    Convert input x to an iterable (list).
+    Handles numpy scalars, numpy arrays, None, and assumes lists are already iterable.
+    Parameters
+    ----------
+    x : any
+        Input to convert to iterable
+    Returns
+    -------
+    list
+        Iterable version of x
+    """
     # if x is a 0-d numpy scalar → treat as empty set
     if isinstance(x, np.ndarray) and x.ndim == 0:
         return []
@@ -174,7 +186,21 @@ def to_iterable(x):
         return []
     # otherwise assume it's already iterable (list)
     return x
+
 def jaccard(a, b):
+    """
+    Jaccard index between two sets/lists a and b
+    Parameters
+    ----------
+    a : iterable
+        First set/list
+    b : iterable
+        Second set/list
+    Returns
+    -------
+    float
+        Jaccard index between a and b
+    """
     A = set(to_iterable(a))
     B = set(to_iterable(b))
 
@@ -280,6 +306,24 @@ def compute_shape_matches(pred_shapes, true_shapes):
 
 # put together the metrics and return the mean values in a dictionary
 def compute_map_metrics(map_logits:np.ndarray,target_map:np.ndarray) -> dict:
+    """
+    Compute various metrics for the predicted shape map against the target shape map.
+    Parameters
+    ----------
+    map_logits : np.ndarray
+        The map logits of shape (B,S,M)
+    target_map : np.ndarray
+        The target shape map of shape (B,S,M)
+    Returns
+    -------
+    dict
+        A dictionary containing various metrics:
+        - overall_accuracy: float, mean accuracy across all shapes and locations
+        - presence_accuracy: float, accuracy for locations with shapes present
+        - absence_accuracy: float, accuracy for locations with no shapes
+        - per_shape_accuracies: dict, accuracy for each individual shape
+        - shape_presence_jaccard: float, mean Jaccard index for the shape sets present in the predictions vs targets
+    """
     pred_shape_map = get_shape_map_from_logits(map_logits, linkfunction=softmax)
     shape_map_accuracies = compute_shape_map_accuracies(pred_shape_map, target_map)
 
