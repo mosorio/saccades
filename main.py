@@ -118,8 +118,8 @@ def main(config):
     (test_count_map_loss, test_dist_map_loss, test_full_map_loss) = test_map_losses
 
     if config.head == 'counting':
-        (train_percls_loss, train_percls_acc, train_present_loss, train_absent_loss,
-        test_percls_loss, test_percls_acc, test_present_loss, test_absent_loss) = per_shape_stats
+        (train_percls_loss, train_percls_acc, train_present_loss, train_absent_loss, train_overall_acc, train_presence_acc, train_absence_acc, train_shape_jaccard,
+        test_percls_loss, test_percls_acc, test_present_loss, test_absent_loss, test_overall_acc, test_presence_acc, test_absence_acc, test_shape_jaccard) = per_shape_stats
 
     # train_loss, train_acc, train_num_loss, train_shape_loss, train_full_map_loss, train_count_map_loss, test_loss, test_acc, test_num_loss, test_shape_loss, test_full_map_loss, test_count_map_loss, conf, test_results = results
     test_results.to_pickle(f'{results_dir}/test_results_{base_name}.pkl')
@@ -148,6 +148,10 @@ def main(config):
         # df_train['percls specificity'] = list(train_percls_specificity)
         df_train['present loss'] = train_present_loss
         df_train['absent loss'] = train_absent_loss
+        df_train['overall acc'] = train_overall_acc
+        df_train['presence acc'] = train_presence_acc
+        df_train['absence acc'] = train_absence_acc
+        df_train['shape jaccard'] = train_shape_jaccard
 
     # df_train['rnn iterations'] = config.n_iters
     df_train['dataset'] = 'train'
@@ -182,6 +186,10 @@ def main(config):
             # df_test_list[ts]['percls specificity'] = list(test_percls_specificity[ts])
             df_test_list[ts]['present loss'] = test_present_loss[ts]
             df_test_list[ts]['absent loss'] = test_absent_loss[ts]
+            df_test_list[ts]['overall acc'] = test_overall_acc[ts]
+            df_test_list[ts]['presence acc'] = test_presence_acc[ts]
+            df_test_list[ts]['absence acc'] = test_absence_acc[ts]
+            df_test_list[ts]['shape jaccard'] = test_shape_jaccard[ts]
 
     np.save(f'{results_dir}/confusion_{base_name}', confs)
     if config.save_batch_confusion:
