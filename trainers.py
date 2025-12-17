@@ -914,9 +914,22 @@ class Trainer():
         res_te  = [test_losses, test_accs, confs, test_results]
 
         if counting:
-            per_shape_stats = (
-                train_percls_loss, train_percls_acc, train_present_loss, train_absent_loss,
-                test_percls_loss, test_percls_acc, test_present_loss, test_absent_loss
+            per_shape_stats = (train_percls_loss,
+                train_percls_acc,
+                train_present_loss,
+                train_absent_loss,
+                train_overall_acc,
+                train_presence_acc,
+                train_absence_acc,
+                train_shape_jaccard,
+                test_percls_loss,
+                test_percls_acc,
+                test_present_loss,
+                test_absent_loss,
+                test_overall_acc,
+                test_presence_acc,
+                test_absence_acc,
+                test_shape_jaccard,
             )
             results_list = res_tr + res_te + [per_shape_stats]
         else:
