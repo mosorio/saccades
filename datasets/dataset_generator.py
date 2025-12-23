@@ -132,7 +132,7 @@ class DatasetGenerator:
             # select where to place distractor(s)
             empty_locs = [i for i in range(n_symbols) if i not in objects2count]
             if n_distract > 0:
-                if 'corner' in challenge:
+                if 'corner' in challenge: # distractor placed in the corner
                     distractors = [0 for _ in range(n_distract)]
                 else:
                     distractors = random.sample(empty_locs, n_distract)
@@ -832,6 +832,8 @@ def main():
     conf = parser.parse_args()
     if conf.same: # so you can still use this input argument (but the variable is not used later on)
         conf.distinctive = 0
+    print('\n Dataset generation with the following settings:')
+    print(conf)
 
     if conf.distinctive == 0:
         distinctiveness = 'same'
