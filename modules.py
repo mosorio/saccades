@@ -97,7 +97,7 @@ class ConvNet(nn.Module):
 class RNN(nn.Module):
 
     # you can also accept arguments in your model constructor
-    def __init__(self, data_size, hidden_size, output_size, act=None):
+    def __init__(self, data_size, hidden_size, output_size, act=None, use_layernorm=False):
         super().__init__()
 
         self.hidden_size = hidden_size
@@ -120,6 +120,7 @@ class RNN(nn.Module):
 
         self.i2h = nn.Linear(input_size, hidden_size)
         self.h2o = nn.Linear(hidden_size, output_size)
+        self.norm = nn.LayerNorm(hidden_size) if use_layernorm else None
         self.init_params(gain)
 
 
@@ -128,6 +129,8 @@ class RNN(nn.Module):
         hidden = self.i2h(input)
         if self.act_fun is not None:
             hidden = self.act_fun(hidden)
+        if self.norm is not None:
+            hidden = self.norm(hidden)
         output = self.h2o(hidden)
         return output, hidden
 
@@ -147,6 +150,57 @@ class RNN(nn.Module):
 
     def initHidden(self, batch_size):
         return torch.zeros(batch_size, self.hidden_size)
+
+
+class GRU(nn.Module):
+    """GRU-based recurrent cell, drop-in alternative to RNN with the same
+    per-timestep interface: forward(data, last_hidden) -> (output, hidden).
+
+    """
+    def __init__(self, data_size, hidden_size, output_size, act=None, use_layernorm=False):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.cell = nn.GRUCell(data_size, hidden_size)
+        for name, param in self.cell.named_parameters():
+            if 'weight_hh' in name:
+                nn.init.orthogonal_(param)
+        self.norm = nn.LayerNorm(hidden_size) if use_layernorm else None
+
+    def forward(self, data, last_hidden):
+        hidden = self.cell(data, last_hidden)
+        if self.norm is not None:
+            hidden = self.norm(hidden)
+        return hidden, hidden
+
+    def initHidden(self, batch_size):
+        return torch.zeros(batch_size, self.hidden_size)
+
+
+class LSTM(nn.Module):
+    """LSTM-based recurrent cell, drop-in alternative to RNN/GRU with the same
+    per-timestep interface: forward(data, last_hidden) -> (output, hidden).
+
+    """
+    def __init__(self, data_size, hidden_size, output_size, act=None, use_layernorm=False):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.cell = nn.LSTMCell(data_size, hidden_size)
+        for name, param in self.cell.named_parameters():
+            if 'weight_hh' in name:
+                nn.init.orthogonal_(param)
+        self.norm = nn.LayerNorm(hidden_size) if use_layernorm else None
+
+    def forward(self, data, last_hidden):
+        h_prev, c_prev = last_hidden[:, :self.hidden_size], last_hidden[:, self.hidden_size:]
+        h, c = self.cell(data, (h_prev, c_prev))
+        if self.norm is not None:
+            h = self.norm(h)
+            c = self.norm(c)
+        hidden = torch.cat((h, c), dim=1)
+        return h, hidden
+
+    def initHidden(self, batch_size):
+        return torch.zeros(batch_size, 2 * self.hidden_size)
 
 
 class MultRNN(nn.Module):

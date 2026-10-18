@@ -1,5 +1,6 @@
 """Default simulation parameters can be controlled via the command line arguments below."""
 import argparse
+import hashlib
 
 
 def get_base_name(config):
@@ -8,7 +9,7 @@ def get_base_name(config):
     target_type = config.target_type
     train_on = config.train_on
     noise_level = config.noise_level
-    train_size = config.train_size
+    train_size = config.curriculum_train_size if getattr(config, 'curriculum', '') else config.train_size
     n_epochs = config.n_epochs
     min_num = config.min_num
     max_num = config.max_num
@@ -28,6 +29,7 @@ def get_base_name(config):
     else:
         shape_distinctiveness = ''
     challenge = config.challenge
+    curriculum_tag = f'_curr-{config.curriculum}' if getattr(config, 'curriculum', '') else ''
     # solar = 'solarized_' if config.solarize else ''
     transform = f'{config.shape_input}_' if 'logpolar' in config.shape_input else 'gw6_'
     if config.transform:
@@ -37,13 +39,32 @@ def get_base_name(config):
     policy = config.policy
     misalign = 'misalign_' if config.misalign else ''
     
+    rnn_type = getattr(config, 'rnn_type', 'vanilla')
+    rnn_tag = f'_rnn-{rnn_type}' + ('-ln' if getattr(config, 'use_layernorm', False) else '')
+    what_divisive_norm = getattr(config, 'what_divisive_norm', 'none')
+    wdn_tag = f'_wdn-{what_divisive_norm}' if what_divisive_norm != 'none' else ''
+    class_weights_type = getattr(config, 'class_weights_type', 'uniform')
+    cw_tag = f'_cwt-{class_weights_type}'
+    if class_weights_type == 'dataset_based':
+        cw_tag += f'-{getattr(config, "abs_weight_fn", "sqrt_inv")}'
+
+    if getattr(config, 'small_model_encoder', False):
+        # Fixed-length hash instead of spelling out xy_preencode_size/joint_hidden_size --
+        # a literal tag grows with however many layers joint_hidden_size has, which risks
+        # exceeding the OS filename length limit on already-long curriculum filenames.
+        enc_key = f'{config.xy_preencode_size}-{"x".join(str(w) for w in config.joint_hidden_size)}'
+        sme_tag = f'_sme-{hashlib.md5(enc_key.encode()).hexdigest()[:6]}'
+    else:
+        sme_tag = ''
+
     # model_desc = f'{model_type}{detach}{act}{pretrain}_hsize-{config.h_size}_input-{train_on}{kernel}_{config.shape_input}'
-    model_desc = f'{model_type}{detach}{pretrain}_hsize-{config.h_size}_input-{train_on}_{config.shape_input}'
+    model_desc = f'{model_type}{detach}{pretrain}_hsize-{config.h_size}_input-{train_on}_{config.shape_input}{rnn_tag}{wdn_tag}{sme_tag}'
     # data_desc = f'num{min_num}-{max_num}_nl-{noise_level}_grid{config.grid}_policy-{policy}_trainshapes-{shapes}{same}_{challenge}_{transform}{n_glimpses}{train_size}'
-    data_desc = f'num{min_num}-{max_num}_nl-{noise_level}_policy-{policy}_trainshapes-{shapes}{shape_distinctiveness}_{challenge}_{transform}{n_glimpses}{misalign}{train_size}'
+    data_desc = f'num{min_num}-{max_num}_nl-{noise_level}_policy-{policy}_trainshapes-{shapes}{shape_distinctiveness}_{challenge}{curriculum_tag}_{transform}{n_glimpses}{misalign}{train_size}'
     # train_desc = f'loss-{use_loss}_niters-{n_iters}_{n_epochs}eps'
     withshape = '+shape' if config.learn_shape else ''
-    train_desc = f'loss-{use_loss}{withshape}_opt-{config.opt}_drop{drop}_{sort}count-{target_type}_{n_epochs}eps_rep{config.rep}'
+    lr_tag = '-flatlr' if getattr(config, 'lr_schedule', 'step') == 'flat' else ''
+    train_desc = f'loss-{use_loss}{withshape}{cw_tag}_opt-{config.opt}{lr_tag}_drop{drop}_{sort}count-{target_type}_{n_epochs}eps_rep{config.rep}'
     base_name = f'{model_desc}_{data_desc}_{train_desc}'
     # if config.small_weights:
     #     base_name += '_small'
@@ -64,13 +85,19 @@ def get_config():
     parser.add_argument('--distinctive', type=float, default=0, help='How distinctive should items within a single image be? 0 means all the same shape, 1 means as distinctive as possible, 0.3 and 0.6 in between.')
     parser.add_argument('--challenge', type=str, default='', help='Which images/task to train on. ignore012, ignore123, or "" for simple counting (no special challenge)')
     parser.add_argument('--task_type', type=str, default='count')
-    parser.add_argument('--head', type=str, default='relational', choices=['relational', 'counting'])
+    parser.add_argument('--head', type=str, default='relational', choices=['relational', 'counting', 'map'],
+        help="'map' is the primary slot-wise (S+1)-way map-prediction head, with no downstream count/relational readout attached.")
     parser.add_argument('--count_mode', type=str, default='total', choices=['total', 'per_shape'], help='How the counting head aggregates maps.')
-    parser.add_argument('--map_mode', type=str, default='both', choices=['bce', 'ce', 'both', 'bce_then_ce'], help='Loss function to use for map prediction.')
+    parser.add_argument('--map_mode', type=str, default='ce', choices=['bce', 'ce', 'both', 'fixed_absence'], help='Loss function to use for map prediction.')
     parser.add_argument('--bce_weight', type=float, default=1.0, help='Weight for BCE map loss when map_mode is both or bce_then_ce.')
     parser.add_argument('--ce_weight', type=float, default=1.0, help='Weight for CE map loss when map_mode is both or bce_then_ce.')
     parser.add_argument('--pos_weight', action='store_true', default=False, help='Whether to use positive weighting for the BCE map loss.')
     parser.add_argument('--map_bce_pretrain_epochs', type=int, default=0, help='Epoch count for BCE-only warmup when map_mode=bce_then_ce.')
+    parser.add_argument('--class_weights_type', type=str, default='uniform', choices=['uniform', 'dataset_based'],
+        help="Absence-class weighting for the CE map loss (map_mode in {'ce','both'}). "
+             "'dataset_based' computes the weight once from the training set's aggregate occupied/absence frequency.")
+    parser.add_argument('--abs_weight_fn', type=str, default='sqrt_inv', choices=['inv', 'sqrt_inv'],
+        help="Function mapping (freq_abs, freq_presence) -> absence class weight, used when --class_weights_type=dataset_based.")
 
     parser.add_argument('--no_solarize', action='store_true', default=False)
     parser.add_argument('--n_glimpses', type=int, default=None, help='How long is each glimpse sequence.')
@@ -83,6 +110,27 @@ def get_config():
     # parser.add_argument('--min_pass', type=int, default=0)
     # parser.add_argument('--max_pass', type=int, default=6) # related to symbolic model, which hasn't been updated 
     parser.add_argument('--transform', action='store_true', default=False, help='Whether to load augmented data with transposed and mirror images.')
+
+    # Curriculum-mode dataset loading (mirrors the matching flags in datasets/dataset_generator.py --
+    # these must be passed identically to how the dataset was generated, since loaders.py reconstructs
+    # the dataset filename from them).
+    parser.add_argument('--curriculum', type=str, default='', help='Curriculum preset name (e.g. 2to7). Empty = old non-curriculum loader path.')
+    parser.add_argument('--curriculum_train_size', type=int, default=None,
+        help='Size used when generating the curriculum-mode TRAIN file (must match --size passed to '
+             'dataset_generator.py --dataset_split=train).')
+    parser.add_argument('--curriculum_test_size', type=int, default=None,
+        help='Size used when generating the 3 curriculum-mode TEST-condition files (must match --size passed to '
+             'dataset_generator.py --dataset_split=test).')
+    parser.add_argument('--curriculum_train_ratio', type=float, default=0.5)
+    parser.add_argument('--curriculum_seed', type=int, default=None)
+    parser.add_argument('--train_n_total_values', nargs='*', type=int, default=None)
+    parser.add_argument('--test_n_total_values', nargs='*', type=int, default=None)
+    parser.add_argument('--luminances', nargs='*', type=float, default=[0.1, 0.4, 0.7])
+    parser.add_argument('--polar', action='store_true', default=False)
+    parser.add_argument('--scaling', type=str, default='log')
+    parser.add_argument('--no_glimpse', action='store_true', default=False)
+    parser.add_argument('--truncate', action='store_true', default=False)
+    parser.add_argument('--logscale', action='store_true', default=False)
 
 
     # Once loaded, how to prepare the data for training. What goes into the loaders?
@@ -103,6 +151,26 @@ def get_config():
     parser.add_argument('--pass_penult', action='store_true', default=False, help='whether to pass the penultimate layer of the ventral stream instead of the 2d prediction layer')
     parser.add_argument('--act', type=str, default=None, help='which activation function to use')
     parser.add_argument('--mult', action='store_true', default=False, help='Whether to train model with multiplicative interactions')
+    parser.add_argument('--what_divisive_norm', type=str, default='none', choices=['none', 'fixed', 'learned'],
+        help="Divisive normalization on the raw content ('what') stream before its embedding: 'none' disables it, "
+             "'fixed' uses a constant semi-saturation constant, 'learned' makes it a trainable scalar.")
+    parser.add_argument('--what_divisive_sigma', type=float, default=1.0, help='Semi-saturation constant for --what_divisive_norm.')
+    parser.add_argument('--what_divisive_eps', type=float, default=1e-6, help='Numerical floor for --what_divisive_norm.')
+    parser.add_argument('--rnn_type', type=str, default='vanilla', choices=['vanilla', 'gru', 'lstm'],
+        help="Recurrent cell used by RNNClassifier2stream. 'vanilla' matches the original Elman-RNN behavior; "
+             "'gru'/'lstm' use nn.GRUCell/nn.LSTMCell instead (see modules.py).")
+    parser.add_argument('--use_layernorm', action='store_true', default=False,
+        help='Apply LayerNorm to the hidden state each timestep (only affects rnn_type=gru or lstm).')
+    parser.add_argument('--small_model_encoder', action='store_true', default=False,
+        help="Replace pix_embedding/xy_embedding/joint_embedding with the small model's pre-RNN encoder shape "
+             "(Linear(2,xy_preencode_size)+ReLU on xy, raw content, then Linear(.,joint_hidden_size)+ReLU / "
+             "Linear(joint_hidden_size,hidden_size)+ReLU on the concatenation "
+             "Parietal/ParietalInputEncoder). Only affects train_on='both'.")
+    parser.add_argument('--xy_preencode_size', type=int, default=64,
+        help="Width of the xy pre-encoder (--small_model_encoder only).")
+    parser.add_argument('--joint_hidden_size', nargs='*', type=int, default=None,
+        help="Layer widths for the model encoder's post-concatenation fusion stage "
+             "(--small_model_encoder only; train_on='both'). If omitted, defaults to [256, h_size].")
     # parser.add_argument('--supervise_map', action='store_true', default=False, help='Whether to include a loss on the map prediction during training')
 
     # Training params
@@ -116,7 +184,12 @@ def get_config():
     parser.add_argument('--detach', action='store_true', default=False, help='if True, number loss only backpropigates to the map layer. In this case, learning of most parameters in the network is governed by the map objective.')
     parser.add_argument('--learn_shape', action='store_true', default=False, help='for the parametric shape rep, whether to additional train to produce symbolic shape labels')
     parser.add_argument('--wd', type=float, default=0) # 1e-6
-    parser.add_argument('--lr', type=float, default=0.1)
+    parser.add_argument('--lr', type=float, default=None,
+        help='Learning rate. If omitted, falls back to the hardcoded per-optimizer default in trainers.py '
+             '(0.01 for SGD, 0.001 for Adam) -- unchanged from before this flag was wired up.')
+    parser.add_argument('--lr_schedule', type=str, default='step', choices=['step', 'flat'],
+        help="'step': StepLR decay (x0.7 every n_epochs/20 epochs, reaching ~0.0008x the starting LR by "
+             "the end regardless of how many epochs are requested). 'flat': no decay, constant LR throughout.")
     # parser.add_argument('--map_neg_w', type=float, default=0.1, help='Weight for absent shape channels in the map loss.')
     # parser.add_argument('--map_focal_gamma', type=float, default=2.0, help='Focal loss gamma for the per-shape map BCE.')
 
@@ -165,7 +238,26 @@ def get_config():
         config.map_shape_count = len(config.train_shapes)
         print(f'Setting map shape count to number of training shapes: {config.map_shape_count}')
 
+    # Resolve curriculum-mode total-count value lists the same way dataset_generator.py does,
+    # so loaders.py reconstructs the exact filenames the generator wrote.
+    default_n_total_values = list(range(config.min_num, config.max_num + 1))
+    config.train_n_total_values_list = (
+        [int(v) for v in config.train_n_total_values]
+        if config.train_n_total_values is not None and len(config.train_n_total_values) > 0
+        else default_n_total_values
+    )
+    config.test_n_total_values_list = (
+        [int(v) for v in config.test_n_total_values]
+        if config.test_n_total_values is not None and len(config.test_n_total_values) > 0
+        else default_n_total_values
+    )
+    config.curriculum_seed = config.seed if config.curriculum_seed is None else config.curriculum_seed
+
     if 'ventral' in config.model_type and config.no_pretrain:
         assert 'finetune' in config.model_type  # otherwise the params in the ventral module will never be trained!
+
+    if config.joint_hidden_size is None:
+        config.joint_hidden_size = [256, config.h_size]
+
     print(config)
     return config

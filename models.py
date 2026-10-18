@@ -5,7 +5,7 @@ import torch
 from torch import nn
 from scipy.stats import special_ortho_group, multivariate_normal
 from prettytable import PrettyTable
-from modules import RNN, ConvNet, MultRNN, MultiplicativeLayer, SparseLinear
+from modules import RNN, GRU, LSTM, ConvNet, MultRNN, MultiplicativeLayer, SparseLinear
 import ventral_models as vmod
 from skimage.transform import warp_polar, rotate
 
@@ -45,7 +45,15 @@ def choose_model(config, model_dir):
                 'task_type': getattr(config, 'task_type', 'count'),
                 'map_classes': getattr(config, 'map_shape_count', None),
                 'head': config.head, 'min_num': config.min_num, 'max_num': config.max_num,
-                'count_mode': config.count_mode
+                'count_mode': config.count_mode,
+                'what_divisive_norm': getattr(config, 'what_divisive_norm', 'none'),
+                'what_divisive_sigma': getattr(config, 'what_divisive_sigma', 1.0),
+                'what_divisive_eps': getattr(config, 'what_divisive_eps', 1e-6),
+                'rnn_type': getattr(config, 'rnn_type', 'vanilla'),
+                'use_layernorm': getattr(config, 'use_layernorm', False),
+                'small_model_encoder': getattr(config, 'small_model_encoder', False),
+                'xy_preencode_size': getattr(config, 'xy_preencode_size', 64),
+                'joint_hidden_size': getattr(config, 'joint_hidden_size', 256),
                 }
     if 'par' in model_type:# == 'rnn_classifier_par':
         # Model with two parallel streams at the level of the map. Only one
@@ -89,6 +97,9 @@ def choose_model(config, model_dir):
     elif 'rnn_classifier' in model_type:
         if '2stream' in model_type:
             model = RNNClassifier2stream(sh_sz, hidden_size, map_size, output_size, **mod_args).to(device)
+        else:
+            print(f"Model type '{model_type}' matches 'rnn_classifier' but not a known variant (e.g. 'rnn_classifier2stream'). Exiting")
+            exit()
     elif model_type == 'recurrent_control':
         in_sz = height * width
         model = RNNClassifier2stream(in_sz, hidden_size, map_size, output_size, **mod_args).to(device)
@@ -259,6 +270,48 @@ class PretrainedVentral(nn.Module):
         num, pix, map_, hidden, premap, penult, per_shape_scores  = self.rnn(x, hidden)
         return num, shape_pred, map_, hidden, premap, penult, per_shape_scores 
 
+class DivisiveNorm(nn.Module):
+    """Divisive normalization on the raw content ('what') stream, applied
+    before it enters its embedding layer.
+
+    Per-example evidence is divided by a semi-saturation constant plus the
+    total evidence across shapes (`sigma + sum(x)`), so the representation's
+    scale doesn't grow with how many shapes have non-zero evidence (e.g. with
+    larger K in curriculum-mode scenes). `mode='fixed'` keeps sigma constant;
+    `mode='learned'` makes it a trainable scalar.
+    """
+    def __init__(self, mode='fixed', sigma=1.0, eps=1e-6):
+        super().__init__()
+        if mode not in ('fixed', 'learned'):
+            raise ValueError(f"DivisiveNorm mode must be 'fixed' or 'learned', got {mode!r}")
+        self.mode = mode
+        self.eps = eps
+        if mode == 'learned':
+            self.sigma = nn.Parameter(torch.tensor(float(sigma)))
+        else:
+            self.register_buffer('sigma', torch.tensor(float(sigma)))
+
+    def forward(self, x):
+        sigma = self.sigma.clamp(min=self.eps) if self.mode == 'learned' else self.sigma
+        denom = (sigma + x.sum(dim=-1, keepdim=True)).clamp(min=self.eps)
+        return x / denom
+
+
+class MapHead(nn.Module):
+    """Primary map-prediction head: hidden state -> slot-wise (S+1)-way logits.
+
+    """
+    def __init__(self, hidden_dim, n_classes, n_slots):
+        super().__init__()
+        self.n_classes = n_classes
+        self.n_slots = n_slots
+        self.map_gen = nn.Linear(hidden_dim, n_classes * n_slots)
+
+    def forward(self, h):
+        B = h.size(0)
+        return self.map_gen(h).view(B, self.n_classes, self.n_slots)
+
+
 class CountingHead(nn.Module):
     def __init__(self, hidden_dim, map_dim, n_shapes, n_counts, mode='total'):
         super().__init__()
@@ -338,7 +391,25 @@ class RNNClassifier2stream(nn.Module):
         # Counting mode: 'total' or 'per_shape'
         self.count_mode = kwargs['count_mode'] if 'count_mode' in kwargs.keys() else 'total'
 
-        self.head = kwargs['head'] if 'head' in kwargs.keys() else None         # 'relational' | 'counting'
+        self.head = kwargs['head'] if 'head' in kwargs.keys() else None         # 'relational' | 'counting' | 'map'
+        self.rnn_type = kwargs.get('rnn_type', 'vanilla')
+        if self.rnn_type not in ('vanilla', 'gru', 'lstm'):
+            raise ValueError(f"rnn_type must be one of 'vanilla', 'gru', 'lstm', got {self.rnn_type!r}")
+        self.use_layernorm = kwargs.get('use_layernorm', False)
+        self.small_model_encoder = kwargs.get('small_model_encoder', False)
+        self.xy_preencode_size = kwargs.get('xy_preencode_size', 64)
+        # Divisive normalization on the raw content ('what') stream, applied
+        # before its embedding into the RNN input. 'none' disables it entirely.
+        what_divisive_norm = kwargs.get('what_divisive_norm', 'none')
+        if what_divisive_norm not in ('none', 'fixed', 'learned'):
+            raise ValueError(f"what_divisive_norm must be one of 'none', 'fixed', 'learned', got {what_divisive_norm!r}")
+        self.content_norm = None
+        if what_divisive_norm != 'none':
+            self.content_norm = DivisiveNorm(
+                mode=what_divisive_norm,
+                sigma=kwargs.get('what_divisive_sigma', 1.0),
+                eps=kwargs.get('what_divisive_eps', 1e-6),
+            )
         self.count_K = self.max_num   
         self.n_shapes = self.map_classes + 1  
         if self.task_type == 'min':
@@ -352,21 +423,43 @@ class RNNClassifier2stream(nn.Module):
 
         if self.mult:
             embedding_size = 64
+        elif self.small_model_encoder and self.train_on == 'both':
+            self.xy_preencoder = nn.Linear(self.xy_size, self.xy_preencode_size)
+            joint_widths = kwargs.get('joint_hidden_size', None)
+            self.joint_hidden_size = list(joint_widths) if joint_widths is not None else [256, hidden_size]
+            self.joint_layers = nn.ModuleList()
+            in_width = pix_size + self.xy_preencode_size
+            for out_width in self.joint_hidden_size:
+                self.joint_layers.append(nn.Linear(in_width, out_width))
+                in_width = out_width
+            embedding_size = in_width  # last fusion layer's width -- decoupled from hidden_size
+            for layer in [self.xy_preencoder] + list(self.joint_layers):
+                nn.init.kaiming_uniform_(layer.weight, a=0.0, nonlinearity='relu')
+                nn.init.zeros_(layer.bias)
         else:
             embedding_size = hidden_size
             self.pix_embedding = nn.Linear(pix_size, embedding_size//2)
             self.xy_embedding = nn.Linear(self.xy_size, embedding_size//2)
-        if self.train_on == 'both':
+        if self.small_model_encoder and self.train_on == 'both':
+            pass  # fully encoded by xy_preencoder/joint_layers in forward(); no joint_embedding needed
+        elif self.train_on == 'both':
             if self.mult:
                 self.joint_embedding = nn.Linear(self.xy_size*pix_size, embedding_size)
             else:
-                self.joint_embedding = nn.Linear(embedding_size, embedding_size)
+                # pix_embedding + xy_embedding are each embedding_size//2 wide; for odd
+                # embedding_size their concatenation is one short of embedding_size itself.
+                self.joint_embedding = nn.Linear(2 * (embedding_size // 2), embedding_size)
         else:
             self.joint_embedding = nn.Linear(embedding_size//2, embedding_size)
 
         print(f'RNNClassifier2stream: train_on {self.train_on}, mult {self.mult}, embedding_size {embedding_size}, pix_size {pix_size}, xy_size {self.xy_size}')
 
-        self.rnn = RNN(embedding_size, hidden_size, hidden_size, self.act)
+        if self.rnn_type == 'gru':
+            self.rnn = GRU(embedding_size, hidden_size, hidden_size, self.act, use_layernorm=self.use_layernorm)
+        elif self.rnn_type == 'lstm':
+            self.rnn = LSTM(embedding_size, hidden_size, hidden_size, self.act, use_layernorm=self.use_layernorm)
+        else:
+            self.rnn = RNN(embedding_size, hidden_size, hidden_size, self.act, use_layernorm=self.use_layernorm)
         self.drop_layer = nn.Dropout(p=drop)
 
         # === Number head(s) ===
@@ -389,6 +482,8 @@ class RNNClassifier2stream(nn.Module):
                 n_counts=self.output_size, 
                 mode=self.count_mode
             )
+        elif self.head == 'map':
+            self.map_head = MapHead(hidden_dim=hidden_size, n_classes=self.n_shapes, n_slots=self.map_size)
 
         # elif self.head == 'counting':
         #     # logits over counts 0..K for each of n_shapes → total units n_shapes*(K+1)
@@ -408,15 +503,22 @@ class RNNClassifier2stream(nn.Module):
     def forward(self, x, hidden):
         # ----- Stream selection & fusion -----
         if self.train_on == 'both':
-            xy = x[:, :self.xy_size]  
+            xy = x[:, :self.xy_size]
             pix = x[:, self.xy_size:]
-            
-            if not self.mult:
+            if self.content_norm is not None:
+                pix = self.content_norm(pix)
+
+            if self.small_model_encoder:
+                xy_enc = torch.relu(self.xy_preencoder(xy))
+                combined = torch.cat((pix, xy_enc), dim=-1)
+                for layer in self.joint_layers:
+                    combined = torch.relu(layer(combined))
+            elif not self.mult:
                 xy = self.LReLU(self.xy_embedding(xy))
                 pix = self.LReLU(self.pix_embedding(pix))
                 combined = torch.cat((xy, pix), dim=-1)
             else:
-                combined = torch.einsum('ij,ik->ijk', xy, pix).reshape(-1, xy.shape[1]*pix.shape[1])          
+                combined = torch.einsum('ij,ik->ijk', xy, pix).reshape(-1, xy.shape[1]*pix.shape[1])
         elif self.train_on == 'xy':
             xy = x
             xy = self.LReLU(self.xy_embedding(xy))
@@ -424,11 +526,16 @@ class RNNClassifier2stream(nn.Module):
             pix = torch.zeros_like(xy)
         elif self.train_on == 'shape':
             pix = x
+            if self.content_norm is not None:
+                pix = self.content_norm(pix)
             pix = self.LReLU(self.pix_embedding(pix))
             combined = pix
 
         # ----- Joint projection → RNN → dropout -----
-        x = self.LReLU(self.joint_embedding(combined))
+        if self.small_model_encoder and self.train_on == 'both':
+            x = combined  # already fully encoded by xy_preencoder/joint_layers above
+        else:
+            x = self.LReLU(self.joint_embedding(combined))
         x, hidden = self.rnn(x, hidden)
         x = self.drop_layer(x)
 
@@ -476,6 +583,12 @@ class RNNClassifier2stream(nn.Module):
             per_shape_scores = None
 
             return num, pix, map_, hidden, x, penult, per_shape_scores
+
+        if self.head == 'map':
+            # Pure map objective: no downstream count/relational readout.
+            map_ = self.map_head(x)          # [B, n_classes, n_slots]
+            penult = map_.reshape(x.size(0), -1)
+            return None, pix, map_, hidden, x, penult, None
 
         # if self.head == 'relational':
         #     num = num_logits_flat

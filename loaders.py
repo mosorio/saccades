@@ -9,6 +9,8 @@ import xarray as xr
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 
+from datasets.curriculum_paths import build_curriculum_filename, resolve_active_n_total_values
+
 
 def get_dataset(size, shapes_set, config, lums, solarize, pair_group):
     """If specified dataset already exists, load it.
@@ -94,6 +96,75 @@ def get_dataset(size, shapes_set, config, lums, solarize, pair_group):
 
     data['filename'] = fname_gw
 
+    return data
+
+
+def get_curriculum_dataset(config, dataset_split, test_condition=None):
+    """Load a curriculum-mode dataset .nc file written by datasets/dataset_generator.py.
+
+    Reconstructs the exact filename the generator used, from the same CLI settings
+    (see datasets/curriculum_paths.py -- the single shared source of truth for the naming
+    scheme, so this can never silently drift from what the generator actually wrote).
+    """
+    distinctive = 0 if config.same else config.distinctive
+    if distinctive == 0:
+        distinctiveness = 'same'
+    elif distinctive == 0.3:
+        distinctiveness = 'distinct-0.3'
+    elif distinctive == 0.6:
+        distinctiveness = 'distinct-0.6'
+    else:
+        distinctiveness = ''
+
+    challenge = f'_{config.challenge}' if config.challenge != '' else ''
+
+    if config.polar:
+        transform = 'logpolar_' if config.scaling == 'log' else 'polar_'
+    else:
+        transform = f'gw{config.glimpse_wid}_'
+    if config.transform:
+        transform += '-rotated'
+
+    shapes = ''.join(config.shapestr)
+
+    if config.no_glimpse:
+        n_glimpses = 'nogl'
+    elif config.n_glimpses is not None:
+        n_glimpses = f'{config.n_glimpses}_'
+    else:
+        n_glimpses = ''
+
+    trunc = 'trunc' if config.truncate else ''
+    logscale = '_logscale' if config.logscale else ''
+
+    active_n_total_values = resolve_active_n_total_values(
+        config.train_n_total_values_list, config.test_n_total_values_list,
+        dataset_split, test_condition,
+    )
+    fname = build_curriculum_filename(
+        curriculum=config.curriculum,
+        dataset_split=dataset_split,
+        test_condition=test_condition if dataset_split == 'test' else '',
+        active_n_total_values=active_n_total_values,
+        noise_level=config.noise_level,
+        shapes=shapes,
+        distinctiveness=distinctiveness,
+        challenge=challenge,
+        grid=config.grid,
+        policy=config.policy,
+        luminances=config.luminances,
+        transform=transform,
+        n_glimpses=n_glimpses,
+        size=config.curriculum_train_size if dataset_split == 'train' else config.curriculum_test_size,
+        trunc=trunc,
+        logscale=logscale,
+    )
+
+    if not os.path.exists(fname + '.nc'):
+        raise FileNotFoundError(f'Curriculum dataset not found: {fname}.nc')
+    print(f'Loading curriculum dataset {fname}')
+    data = xr.open_dataset(fname + '.nc')
+    data['filename'] = fname
     return data
 
 
@@ -197,7 +268,7 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
 
     ### MAP LABEL ###
     # true_loc = torch.tensor(dataset['locations']).float().to(config.device)
-    if config.head == 'counting':
+    if config.head in ('counting', 'map'):
         print('Using one-hot version of locations_class_index as count map target')
         loc_idx = torch.tensor(dataset['locations_class_index'].values).long()  # [B, grid]
         loc_idx[loc_idx == 9] = 8    # map index 9 to 8
@@ -211,6 +282,8 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
         one_hot = torch.nn.functional.one_hot(loc_idx, num_classes=n_shapes+1).float()  # [B, grid, n_shapes]
         #one_hot *= mask.unsqueeze(-1).float()                          # zero out background
         per_shape_map = one_hot.permute(0, 2, 1)                       # [B, n_shapes, grid]
+        # print('per_shape_map shape:', per_shape_map.shape)
+        # print('count_loc:', per_shape_map[0])
         count_loc = per_shape_map          
         all_loc = per_shape_map.clone()   
 
@@ -717,6 +790,22 @@ def get_loader(dataset, config, batch_size=None, gaze=None):
 #     return loader
 
 def choose_loader(config):
+    if getattr(config, 'curriculum', ''):
+        trainset = get_curriculum_dataset(config, 'train')
+        train_loader = get_loader(trainset, config, gaze='free')
+
+        test_loaders = []
+        for condition in ('ood_combo_inrange_n', 'ood_combo_ood_n', 'seen_combo_ood_n'):
+            testset = get_curriculum_dataset(config, 'test', test_condition=condition)
+            loader = get_loader(testset, config, batch_size=2500, gaze='free')
+            loader.testset = condition
+            loader.viewing = 'free'
+            loader.shapes = config.shapestr
+            loader.lums = config.luminances
+            test_loaders.append(loader)
+
+        return [train_loader, test_loaders]
+
     train_size = config.train_size
     test_size = config.test_size
     # try:

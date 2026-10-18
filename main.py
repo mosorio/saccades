@@ -22,21 +22,16 @@ from utils import Timer
 import json
 from pathlib import Path
 
-# def set_device(config):
-#     """Specify the compute resource (CUDA, MPS, or CPU) to train model with."""
-#     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-#         device = torch.device("mps")
-#     elif torch.cuda.is_available() and not config.no_cuda:
-#         device = torch.device(f"cuda:{config.gpu}")
-#     else:
-#         device = torch.device("cpu")
-#     print(f'Using device: {device}')
-#     return device
-
 def set_device(config):
-    """Specify the compute resource (CUDA or CPU) to train model with"""
-    use_cuda = (not config.no_cuda) and torch.cuda.is_available()
-    device = torch.device(f"cuda:{config.gpu}" if use_cuda else "cpu")
+    """Specify the compute resource (CUDA, MPS, or CPU) to train model with."""
+    if config.no_cuda:
+        device = torch.device("cpu")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif torch.cuda.is_available():
+        device = torch.device(f"cuda:{config.gpu}")
+    else:
+        device = torch.device("cpu")
     print(f'Using device: {device}')
     return device
 
@@ -103,7 +98,7 @@ def main(config):
 
     # Organize and save results
 
-    if config.head == 'counting':
+    if config.head in ('counting', 'map'):
         (train_losses, train_accs, test_losses, test_accs, confs, test_results, per_shape_stats) = results
     else:
         (train_losses, train_accs, test_losses, test_accs, confs, test_results) = results
@@ -117,9 +112,8 @@ def main(config):
     (test_count_num_loss, test_dist_num_loss, test_all_num_loss) = test_num_losses
     (test_count_map_loss, test_dist_map_loss, test_full_map_loss) = test_map_losses
 
-    if config.head == 'counting':
-        (train_percls_loss, train_percls_acc, train_present_loss, train_absent_loss, train_overall_acc, train_presence_acc, train_absence_acc, train_shape_jaccard,
-        test_percls_loss, test_percls_acc, test_present_loss, test_absent_loss, test_overall_acc, test_presence_acc, test_absence_acc, test_shape_jaccard) = per_shape_stats
+    if config.head in ('counting', 'map'):
+        (train_percls_loss, train_percls_acc, train_present_loss, train_absent_loss, train_overall_acc, train_presence_acc, train_absence_acc, train_shape_jaccard, train_strict_acc, train_mean_per_shape_acc, train_mean_per_location_acc, test_percls_loss, test_percls_acc, test_present_loss, test_absent_loss, test_overall_acc, test_presence_acc, test_absence_acc, test_shape_jaccard, test_strict_acc, test_mean_per_shape_acc, test_mean_per_location_acc) = per_shape_stats
 
     # train_loss, train_acc, train_num_loss, train_shape_loss, train_full_map_loss, train_count_map_loss, test_loss, test_acc, test_num_loss, test_shape_loss, test_full_map_loss, test_count_map_loss, conf, test_results = results
     test_results.to_pickle(f'{results_dir}/test_results_{base_name}.pkl')
@@ -139,7 +133,7 @@ def main(config):
     df_train['accuracy all'] = train_acc_all
     df_train['epoch'] = np.arange(config.n_epochs + 1)
 
-    if config.head == 'counting':
+    if config.head in ('counting', 'map'):
         df_train['percls loss'] = list(train_percls_loss)
         df_train['percls acc'] = list(train_percls_acc)
         # df_train['percls strict acc'] = list(train_percls_strict_acc)
@@ -152,6 +146,9 @@ def main(config):
         df_train['presence acc'] = train_presence_acc
         df_train['absence acc'] = train_absence_acc
         df_train['shape jaccard'] = train_shape_jaccard
+        df_train['strict acc'] = train_strict_acc
+        df_train['mean percls acc'] = train_mean_per_shape_acc
+        df_train['mean perloc acc'] = train_mean_per_location_acc
 
     # df_train['rnn iterations'] = config.n_iters
     df_train['dataset'] = 'train'
@@ -177,7 +174,7 @@ def main(config):
         df_test_list[ts]['test lums'] = str(loader.lums)
         df_test_list[ts]['epoch'] = np.arange(config.n_epochs + 1)
 
-        if config.head == 'counting':
+        if config.head in ('counting', 'map'):
             df_test_list[ts]['percls loss'] = list(test_percls_loss[ts])
             df_test_list[ts]['percls acc'] = list(test_percls_acc[ts])
             # df_test_list[ts]['percls strict acc'] = list(test_percls_strict_acc[ts])
@@ -190,6 +187,9 @@ def main(config):
             df_test_list[ts]['presence acc'] = test_presence_acc[ts]
             df_test_list[ts]['absence acc'] = test_absence_acc[ts]
             df_test_list[ts]['shape jaccard'] = test_shape_jaccard[ts]
+            df_test_list[ts]['strict acc'] = test_strict_acc[ts]
+            df_test_list[ts]['mean percls acc'] = test_mean_per_shape_acc[ts]
+            df_test_list[ts]['mean perloc acc'] = test_mean_per_location_acc[ts]
 
     np.save(f'{results_dir}/confusion_{base_name}', confs)
     if config.save_batch_confusion:
@@ -209,11 +209,18 @@ if __name__ == '__main__':
     """
     config = get_config()
 
-    # config_dir = Path("/Users/mosorio/Documents/ChrisWork/saccades/datasets/config_dir") 
-    config_dir = Path("/mnt/quick/maria/saccades/datasets/config_dir")
-    config_dir.mkdir(parents=True, exist_ok=True) 
-    
-    config_path = config_dir / "config.json"
+    config_dir = Path("/Users/mosorio/Documents/ChrisWork/saccades/datasets/config_dir")
+    # config_dir = Path("/mnt/quick/maria/saccades/datasets/config_dir")
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    # One file per run (named like the results/model files), not a single shared file --
+    # a shared filename just gets overwritten by the next run, losing any historical record
+    # of what settings actually produced a given saved result. No prefix on the filename --
+    # base_name alone is already within a few characters of the OS filename length limit for
+    # some configs (stacked rnn/divisive-norm/encoder tags); config_dir/ already disambiguates
+    # these from the results/model files living in other directories.
+    base_name = get_base_name(config)
+    config_path = config_dir / f"{base_name}.json"
     with open(config_path, "w") as f:
         json.dump(vars(config), f, indent=2, sort_keys=True)
 

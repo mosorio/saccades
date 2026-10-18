@@ -29,6 +29,10 @@ from collections import defaultdict
 
 # import symbolic_model as solver
 from letters import get_alphabet, get_alphabet_5x5
+from combo_splits import build_combo_splits_by_k
+from curriculum_presets import resolve_curriculum_preset
+from curriculum_paths import build_curriculum_filename
+from task_restrictions import get_task_restrictions, minimum_total_for_k, counts_are_valid
 import utils
 
 
@@ -394,9 +398,108 @@ class DatasetGenerator:
 
         # logscale
         return shape_coords
+
+    @staticmethod
+    def random_positive_composition(total, parts):
+        """Sample positive integer counts that sum to total."""
+        if parts == 1:
+            return np.array([total], dtype=np.int64)
+        cuts = np.sort(np.random.choice(np.arange(1, total), size=parts - 1, replace=False))
+        return np.diff(np.concatenate([[0], cuts, [total]])).astype(np.int64)
+
+    @staticmethod
+    def normalize_sampling_probs(values, weights_by_value=None):
+        values = [int(v) for v in values]
+        if not values:
+            raise ValueError("values cannot be empty when normalizing sampling probabilities")
+        if weights_by_value is None:
+            probs = np.ones(len(values), dtype=np.float64)
+        else:
+            probs = np.array([float(weights_by_value.get(v, 0.0)) for v in values], dtype=np.float64)
+            if np.any(probs < 0):
+                raise ValueError("Sampling weights must be non-negative")
+            if probs.sum() <= 0:
+                raise ValueError(f"Sampling weights sum to zero for values {values}")
+        probs = probs / probs.sum()
+        return values, probs
+
+    def sample_curriculum_scene_spec(self, config):
+        """Sample one scene spec from the active curriculum/task configuration."""
+        curriculum_cfg = getattr(config, 'curriculum_cfg', None)
+        if curriculum_cfg is None:
+            raise ValueError("sample_curriculum_scene_spec called without an active curriculum config")
+
+        split_name = getattr(config, 'dataset_split', 'train')
+        if split_name == 'train':
+            candidate_k_values = curriculum_cfg["train_k_values"]
+            weight_map = curriculum_cfg["train_sampling_weights"]
+        else:
+            candidate_k_values = curriculum_cfg["eval_k_values"]
+            weight_map = curriculum_cfg["test_sampling_weights"]
+
+        active_n_total_values = getattr(config, 'active_n_total_values', config.n_total_values_list)
+        allowed_combos = getattr(config, 'allowed_combinations_by_k', None) or {}
+
+        # Only offer K values that are actually samplable under the currently active
+        # combo pool and total-count values -- e.g. a K held out of training entirely
+        # has no combos in the train pool, and a K larger than every active total has
+        # nowhere to draw counts from. Filtering here (rather than after sampling K)
+        # avoids picking a K that's a guaranteed dead end.
+        feasible_k_values = [
+            k for k in candidate_k_values
+            if len(allowed_combos.get(k, [])) > 0
+            and any(v >= minimum_total_for_k(config.task_type, k) for v in active_n_total_values)
+        ]
+        if not feasible_k_values:
+            condition = getattr(config, 'test_condition', '')
+            condition_note = f" (test_condition='{condition}')" if condition else ''
+            raise ValueError(
+                f"No feasible K values for split '{split_name}'{condition_note}: "
+                f"none of {candidate_k_values} have both a non-empty combo pool and a "
+                f"supporting total-count value (active totals={active_n_total_values})."
+            )
+
+        k_values, k_probs = self.normalize_sampling_probs(feasible_k_values, weight_map)
+        k_unique = int(np.random.choice(k_values, p=k_probs))
+
+        min_total = minimum_total_for_k(config.task_type, k_unique)
+        allowed_n_total_values = [v for v in active_n_total_values if v >= min_total]
+        total_count = int(np.random.choice(allowed_n_total_values))
+
+        combo_pool = allowed_combos[k_unique]
+        unique_shapes = tuple(int(x) for x in combo_pool[np.random.randint(len(combo_pool))])
+
+        counts = self.random_positive_composition(total_count, k_unique)
+        if not counts_are_valid(config.task_type, counts):
+            for _ in range(10000):
+                counts = self.random_positive_composition(total_count, k_unique)
+                if counts_are_valid(config.task_type, counts):
+                    break
+        if not counts_are_valid(config.task_type, counts):
+            raise ValueError(
+                f"Failed to sample task-valid counts for task '{config.task_type}', "
+                f"K={k_unique}, total_count={total_count}"
+            )
+
+        shape_assign = np.concatenate([
+            np.full((int(cnt),), int(shape), dtype=np.int64)
+            for shape, cnt in zip(unique_shapes, counts)
+        ])
+        np.random.shuffle(shape_assign)
+
+        return {
+            "curriculum_name": curriculum_cfg["name"],
+            "dataset_split": split_name,
+            "k_unique": int(k_unique),
+            "unique_shapes": tuple(int(x) for x in unique_shapes),
+            "counts": counts.astype(np.int64),
+            "shape_assign": shape_assign.astype(np.int64),
+            "total_count": int(total_count),
+        }
     
     def get_shape_coords(self, glimpse_coords, shapes_set, distinctiveness,
-                         objects2count, distractors, task_type, chosen_pair=None):
+                         objects2count, distractors, task_type, chosen_pair=None,
+                         forced_shape_assign=None):
         """Generate glimpse shape feature vectors.
 
         Each object is randomly assigned one shape. The shape feature
@@ -440,7 +543,13 @@ class DatasetGenerator:
         num = len(objects2count)
 
         # pair-split enforcement
-        if (chosen_pair is not None):
+        if forced_shape_assign is not None:
+            shape_assign = np.asarray(forced_shape_assign, dtype=int)
+            if len(shape_assign) != num:
+                raise ValueError(
+                    f"forced_shape_assign length {len(shape_assign)} does not match number of objects {num}"
+                )
+        elif (chosen_pair is not None):
             #print(f'Using chosen pair: {chosen_pair}')
             classes = list(chosen_pair)
             # a, b = chosen_pair  # actual shape IDs
@@ -498,7 +607,7 @@ class DatasetGenerator:
         # assert np.all(shape_coords.sum(axis=1) > 0)
         return shape_coords, shape_map, shape_hist
 
-    def generate_one_example(self, num, n_disract, n_unique, config, chosen_pair=None):
+    def generate_one_example(self, num, n_disract, n_unique, config, chosen_pair=None, scene_spec=None):
         """Synthesize a single toy glimpse sequence and apply symbolic solver."""
         distinctiveness = config.distinctive
         # distract = config.distract
@@ -510,7 +619,9 @@ class DatasetGenerator:
         num_low = config.min_num
         num_high = config.max_num
         num_range = [num_low, num_high]
-        if np.isnan(n_unique):
+        if scene_spec is not None:
+            shapes_set = list(scene_spec['unique_shapes'])
+        elif np.isnan(n_unique):
             shapes_set = config.shapes
         else:
             shapes_set = random.sample(config.shapes, n_unique)
@@ -563,7 +674,11 @@ class DatasetGenerator:
         # print(f'Generating example with num: {num}, n_distract: {n_disract}, n_unique: {n_unique}, shapes_set: {shapes_set}, distinctiveness: {distinctiveness}, challenge: {challenge}, policy: {policy}')
         xy_coords, objects, noiseless_coords, to_count, distractors = self.get_xy_coords(num, n_disract, noise_level, challenge, policy)
         # print(f'num: {num}, objects: {objects}, to_count: {to_count}, distractors: {distractors}')
-        shape_coords, shape_map, shape_hist = self.get_shape_coords(xy_coords, shapes_set, distinctiveness, to_count, distractors, task_type, chosen_pair)
+        forced_shape_assign = None if scene_spec is None else scene_spec['shape_assign']
+        shape_coords, shape_map, shape_hist = self.get_shape_coords(
+            xy_coords, shapes_set, distinctiveness, to_count, distractors,
+            task_type, chosen_pair, forced_shape_assign=forced_shape_assign
+        )
 
         # print("To count", to_count)
         # Generate one-hot encoding of shape identity for each glimpse
@@ -701,12 +816,20 @@ class DatasetGenerator:
                         'target_coords_1x1': target_coords_1x1,
                         'distract_coords_1x1': distract_coords_1x1
                         }
+        if scene_spec is not None:
+            example_dict.update({
+                'k_unique': int(scene_spec['k_unique']),
+                'unique_shapes': np.array(scene_spec['unique_shapes'], dtype=np.int64),
+                'counts_per_unique_shape': np.array(scene_spec['counts'], dtype=np.int64),
+                'curriculum_name': scene_spec['curriculum_name'],
+                'dataset_split': scene_spec['dataset_split'],
+            })
         return example_dict
 
     def generate_dataset(self, config):
         """Fill data frame with toy examples."""
         # numbers = np.arange(num_range[0], num_range[1] + 1)
-        numbers = np.arange(config.min_num, config.max_num + 1)
+        numbers = np.array(config.n_total_values_list)
         n_examples = config.size
         n_repeat = np.ceil(n_examples/len(numbers)).astype(int)
         nums = np.tile(numbers[::-1], n_repeat)
@@ -734,15 +857,33 @@ class DatasetGenerator:
             n_distract = np.zeros_like(nums)
             n_unique = np.empty_like(nums) * np.nan
 
-        if getattr(config, 'pair_split', None):
+
+        pair_group_size = getattr(config, 'pair_group_size', 2)
+
+        if getattr(config, 'curriculum_cfg', None) is not None:
+            data = []
+            for i in tqdm(range(n_examples)):
+                scene_spec = self.sample_curriculum_scene_spec(config)
+                example = self.generate_one_example(
+                    scene_spec['total_count'],
+                    n_distract[i],
+                    n_unique[i],
+                    config,
+                    scene_spec=scene_spec,
+                )
+                data.append(example)
+        elif getattr(config, 'pair_split', None):
             # --- Decide which label we're balancing ---
             if config.task_type == 'min':
                 label_key = 'numerosity_min'
                 label_range = set()
                 for n in range(config.min_num, config.max_num + 1):
+                    max_min = max(1, n // max(1, pair_group_size))
                     half = n // 2
                     for m in range(1, half + 1):
                         if n % 2 == 0 and m == half:  # skip equal split when forbidden
+                            continue
+                        if m > max_min:
                             continue
                         label_range.add(m)
                 # print(label_range)
@@ -750,16 +891,21 @@ class DatasetGenerator:
                 label_key = 'numerosity_max'
                 label_range = set()
                 for n in range(config.min_num, config.max_num + 1):
+                    max_max = n - max(0, pair_group_size - 1)
                     half = n // 2
                     for m in range(1, half + 1):
                         if n % 2 == 0 and m == half:
                             continue
-                        label_range.add(n - m)
+                        candidate = n - m
+                        if candidate > max_max:
+                            continue
+                        label_range.add(candidate)
                 # print(label_range)
 
             # Per-label quota
             label_target = ceil(config.size / len(label_range))
-            # print(label_target)
+            print(label_range)
+            print(label_target)
             label_counts = defaultdict(int)
 
             # --- Prepare pairs ---
@@ -780,41 +926,82 @@ class DatasetGenerator:
                 # print('pair_target', pair_target)
             pair_counts = defaultdict(int)
 
-            # --- Generate balanced examples ---
-            pair_schedule_len = len(pair_schedule) if pair_schedule else 0
+
+            label_list = sorted(label_range)
+            per_label_target = ceil(config.size / len(label_list))
+            desired_labels = []
+            for lbl in label_list:
+                desired_labels.extend([lbl] * per_label_target)
+            desired_labels = desired_labels[:config.size]
+            print('Desired labels:', desired_labels)
+            random.shuffle(desired_labels)
+
             data = []
             i = 0
-            while len(data) < config.size:
-                idx = i % len(nums)     
-                if pair_schedule:
-                    pair_idx = i % pair_schedule_len
-                    chosen_pair = pair_schedule[pair_idx]
+            label_counts = defaultdict(int)
+            max_attempts_per_label = getattr(config, 'max_label_retries', 1000)
+
+            for lbl in desired_labels:
+                attempts = 0
+                while attempts < max_attempts_per_label:
+                    idx = i % len(nums)
+                    chosen_pair = pair_schedule[i % len(pair_schedule)] if pair_schedule else None
+                    example = self.generate_one_example(nums[idx], n_distract[idx],
+                                                        n_unique[idx], config, chosen_pair)
+                    attempts += 1
+                    i += 1
+
+                    if example.get(label_key) != lbl:
+                        continue
+                    if chosen_pair and pair_counts[chosen_pair] >= pair_target:
+                        continue
+
+                    label_counts[lbl] += 1
+                    if chosen_pair:
+                        pair_counts[chosen_pair] += 1
+                    data.append(example)
+                    break
                 else:
-                    chosen_pair = None                
-                example = self.generate_one_example(nums[idx], n_distract[idx],
-                                                    n_unique[idx], config, chosen_pair)
+                    # couldn't get this label; append the best we have (relax constraint) or log a warning
+                    print(f"Warning: could not fill label {lbl} after {max_attempts_per_label} attempts.")
 
-                # Rejects any example whose label isn’t in the allowable range
-                lbl = example.get(label_key, None)
-                if lbl not in label_range:
-                    i += 1
-                    continue
 
-                # # If the label already hit label_target, skip it
-                # if label_counts[lbl] >= label_target:
-                #     i += 1
-                #     continue
+            # # --- Generate balanced examples ---
+            # pair_schedule_len = len(pair_schedule) if pair_schedule else 0
+            # data = []
+            # i = 0
+            # while len(data) < config.size:
+            #     idx = i % len(nums)     
+            #     if pair_schedule:
+            #         pair_idx = i % pair_schedule_len
+            #         chosen_pair = pair_schedule[pair_idx]
+            #     else:
+            #         chosen_pair = None                
+            #     example = self.generate_one_example(nums[idx], n_distract[idx],
+            #                                         n_unique[idx], config, chosen_pair)
 
-                # If the pair already hit pair_target, skip it
-                if chosen_pair and pair_counts[chosen_pair] >= pair_target:
-                    i += 1
-                    continue
+            #     # Rejects any example whose label isn’t in the allowable range
+            #     lbl = example.get(label_key, None)
+            #     if lbl not in label_range:
+            #         i += 1
+            #         continue
 
-                # label_counts[lbl] += 1
-                if chosen_pair:
-                    pair_counts[chosen_pair] += 1
-                data.append(example)
-                i += 1
+            #     # If the label already hit label_target, skip it
+            #     if label_counts[lbl] >= label_target:
+            #         # print(f'Skipping label {lbl} at count {label_counts[lbl]}')
+            #         i += 1
+            #         continue
+
+            #     # If the pair already hit pair_target, skip it
+            #     if chosen_pair and pair_counts[chosen_pair] >= pair_target:
+            #         i += 1
+            #         continue
+
+            #     label_counts[lbl] += 1
+            #     if chosen_pair:
+            #         pair_counts[chosen_pair] += 1
+            #     data.append(example)
+            #     i += 1
 
         # print(label_counts)
 
@@ -910,6 +1097,8 @@ class DatasetGenerator:
                 "image_width": self.image_width,
             }
         )
+        if 'k_unique' in df.columns:
+            ds['k_unique'] = (["image"], np.stack(df['k_unique'].to_numpy()))
         return ds
 
     def get_solarized_noise(self, image, fg_lum, bg_lum):
@@ -1202,6 +1391,29 @@ def main():
     parser.add_argument('--pair_group_size', type=int, default=2,
         help='Number of distinct shapes per image for pair/subset split (k in C(n,k))'
     )
+    parser.add_argument('--curriculum', type=str, default='',
+        help='Named curriculum preset for per-K combo splits, e.g. 2to7, 246, 357')
+    parser.add_argument('--dataset_split', type=str, default='train', choices=['train', 'test'],
+        help='Which curriculum split to sample from when curriculum mode is active')
+    parser.add_argument('--curriculum_train_ratio', type=float, default=0.5,
+        help='Train split ratio for each active K within the selected curriculum preset')
+    parser.add_argument('--curriculum_seed', type=int, default=None,
+        help='Seed for curriculum combo splitting. Defaults to --seed if omitted')
+    parser.add_argument('--n_total_values', nargs='*', type=int, default=None,
+        help='Explicit total-count values to sample instead of the inclusive min_num/max_num range. '
+             'Used for both train and test unless --train_n_total_values/--test_n_total_values are given.')
+    parser.add_argument('--train_n_total_values', nargs='*', type=int, default=None,
+        help='Explicit total-count values to sample when --dataset_split train (curriculum mode). '
+             'Overrides --n_total_values for the train split.')
+    parser.add_argument('--test_n_total_values', nargs='*', type=int, default=None,
+        help='Explicit total-count values to sample when --dataset_split test (curriculum mode). '
+             'Overrides --n_total_values for the test split. Values also present in the train '
+             'split define the "in-range" condition; values absent from it define the "OOD-N" condition.')
+    parser.add_argument('--test_condition', type=str, default='',
+        choices=['', 'ood_combo_inrange_n', 'ood_combo_ood_n', 'seen_combo_ood_n'],
+        help='Which named OOD test condition to generate. Required when --curriculum is set and '
+             '--dataset_split test. ood_combo_inrange_n: heldout combos x in-range N. '
+             'ood_combo_ood_n: heldout combos x OOD N. seen_combo_ood_n: trained combos x OOD N.')
 
     conf = parser.parse_args()
 
@@ -1210,19 +1422,6 @@ def main():
     #     train_pairs_letters, test_pairs_letters = balanced_pair_split(k=len(labels), labels=labels, seed=conf.pair_seed)
     #     conf.allowed_pairs_letters = train_pairs_letters if conf.pair_group == 'train' else test_pairs_letters
     
-    if conf.pair_split:
-        labels = conf.shapes            
-        subset_size = conf.pair_group_size
-        train_sets_letters, test_sets_letters = balanced_subset_split(labels=labels, subset_size=subset_size, seed=conf.pair_seed)
-        conf.allowed_pairs_letters = (
-            train_sets_letters if conf.pair_group == 'train' else test_sets_letters
-        )
-
-    # if conf.pair_split:
-    #     labels = conf.shapes
-    #     train_pairs_letters, test_pairs_letters = weighted_pair_split(conf.shapes, mix=conf.pair_mix_train, seed=conf.pair_seed)
-    #     conf.allowed_pairs_letters = train_pairs_letters if conf.pair_group == 'train' else test_pairs_letters
-
     if conf.same: # so you can still use this input argument (but the variable is not used later on)
         conf.distinctive = 0
 
@@ -1258,29 +1457,109 @@ def main():
     conf = process_args(conf)  # make sure this line is after 'shapes =' above
     trunc = 'trunc' if conf.truncate else ''
     logscale = '_logscale' if conf.logscale else ''
+    conf.task_restrictions = get_task_restrictions(conf.task_type)
+    default_n_total_values = (
+        [int(v) for v in conf.n_total_values]
+        if conf.n_total_values is not None and len(conf.n_total_values) > 0
+        else list(range(int(conf.min_num), int(conf.max_num) + 1))
+    )
+    conf.train_n_total_values_list = (
+        [int(v) for v in conf.train_n_total_values]
+        if conf.train_n_total_values is not None and len(conf.train_n_total_values) > 0
+        else default_n_total_values
+    )
+    conf.test_n_total_values_list = (
+        [int(v) for v in conf.test_n_total_values]
+        if conf.test_n_total_values is not None and len(conf.test_n_total_values) > 0
+        else default_n_total_values
+    )
+    conf.n_total_values_list = sorted(set(conf.train_n_total_values_list) | set(conf.test_n_total_values_list))
+    if any(v < 1 for v in conf.n_total_values_list):
+        raise ValueError("All total-count values must be >= 1")
+    # "in-range" test values are also seen during train; "OOD" test values are not.
+    conf.inrange_n_values = sorted(v for v in conf.test_n_total_values_list if v in set(conf.train_n_total_values_list))
+    conf.ood_n_values = sorted(v for v in conf.test_n_total_values_list if v not in set(conf.train_n_total_values_list))
+    conf.curriculum_seed = conf.seed if conf.curriculum_seed is None else conf.curriculum_seed
 
+    if conf.curriculum:
+        valid_k_values = []
+        max_available_total = max(conf.n_total_values_list)
+        for k_val in range(int(conf.task_restrictions["min_k"]), len(conf.shapes) + 1):
+            if minimum_total_for_k(conf.task_type, k_val) <= max_available_total:
+                valid_k_values.append(k_val)
+        conf.curriculum_cfg = resolve_curriculum_preset(
+            conf.curriculum,
+            valid_k_values=valid_k_values,
+            train_ratio=conf.curriculum_train_ratio,
+        )
+        train_sets, test_sets, split_stats = build_combo_splits_by_k(
+            n_objects=len(conf.shapes),
+            scene_k_values=conf.curriculum_cfg["eval_k_values"],
+            labels=conf.shapes,
+            seed=conf.curriculum_seed,
+            per_k_train_ratio=conf.curriculum_cfg["split_ratio_by_k"],
+            test_only_k_values=conf.curriculum_cfg["test_only_k_values"],
+        )
+        conf.combo_splits_by_k = {"train": train_sets, "test": test_sets}
+        conf.curriculum_split_stats = split_stats
+        conf.allowed_pairs = None
+        conf.allowed_pairs_letters = None
 
-    # # build the split if requested
-    # if conf.pair_split:
-    #     labels = conf.shapes
-    #     train_pairs, test_pairs = balanced_pair_split(k=len(labels), labels=labels, seed=conf.pair_seed)
-    #     # (a,b) are actual shape IDs already; normalize tuple order
-    #     train_pairs = [tuple(sorted((int(a), int(b)))) for a,b in train_pairs]
-    #     test_pairs  = [tuple(sorted((int(a), int(b)))) for a,b in test_pairs]
-    #     conf.allowed_pairs = train_pairs if conf.pair_group == 'train' else test_pairs
-    # else:
-    #     conf.allowed_pairs = None
-
-    if conf.pair_split:
-        labels = conf.shapes            
+        # Resolve which combo pool + which total-count values feed this invocation.
+        # Train: seen combos, train N values. Test: one of three named OOD conditions,
+        # crossing (seen vs heldout combos) with (in-range vs OOD N values).
+        if conf.dataset_split == 'train':
+            conf.test_condition = ''
+            conf.active_n_total_values = conf.train_n_total_values_list
+            conf.allowed_combinations_by_k = conf.combo_splits_by_k['train']
+        else:
+            if not conf.test_condition:
+                raise ValueError(
+                    "--test_condition is required when --curriculum is set and --dataset_split=test. "
+                    "Choose one of: ood_combo_inrange_n, ood_combo_ood_n, seen_combo_ood_n"
+                )
+            if conf.test_condition == 'ood_combo_inrange_n':
+                if not conf.inrange_n_values:
+                    raise ValueError(
+                        "No in-range N values available (test_n_total_values has no overlap with "
+                        "train_n_total_values) -- cannot build the 'ood_combo_inrange_n' condition."
+                    )
+                conf.active_n_total_values = conf.inrange_n_values
+                conf.allowed_combinations_by_k = conf.combo_splits_by_k['test']
+            elif conf.test_condition == 'ood_combo_ood_n':
+                if not conf.ood_n_values:
+                    raise ValueError(
+                        "No OOD N values available (test_n_total_values has no values outside "
+                        "train_n_total_values) -- cannot build the 'ood_combo_ood_n' condition."
+                    )
+                conf.active_n_total_values = conf.ood_n_values
+                conf.allowed_combinations_by_k = conf.combo_splits_by_k['test']
+            else:  # seen_combo_ood_n
+                if not conf.ood_n_values:
+                    raise ValueError(
+                        "No OOD N values available (test_n_total_values has no values outside "
+                        "train_n_total_values) -- cannot build the 'seen_combo_ood_n' condition."
+                    )
+                conf.active_n_total_values = conf.ood_n_values
+                conf.allowed_combinations_by_k = conf.combo_splits_by_k['train']
+    elif conf.pair_split:
+        labels = conf.shapes
         subset_size = conf.pair_group_size
+        train_sets_letters, test_sets_letters = balanced_subset_split(labels=labels, subset_size=subset_size, seed=conf.pair_seed)
+        conf.allowed_pairs_letters = (
+            train_sets_letters if conf.pair_group == 'train' else test_sets_letters
+        )
         train_sets, test_sets = balanced_subset_split(labels=labels, subset_size=subset_size, seed=conf.pair_seed)
         # Normalize to tuples of ints
         train_sets = [tuple(sorted(int(x) for x in s)) for s in train_sets]
         test_sets  = [tuple(sorted(int(x) for x in s)) for s in test_sets]
         conf.allowed_pairs = train_sets if conf.pair_group == 'train' else test_sets
+        conf.curriculum_cfg = None
     else:
         conf.allowed_pairs = None
+        conf.allowed_pairs_letters = None
+        conf.curriculum_cfg = None
+        conf.allowed_combinations_by_k = None
 
     # # build the split if requested
     # if conf.pair_split:
@@ -1302,9 +1581,31 @@ def main():
     data, data_pd = generator.add_logpolar_glimpses_xr(toydata, conf)
     
     # dirname = 'datasets/image_sets'
-    dirname = 'datasets/image_sets_min_max'
-    pair_suffix = f'_pair-{conf.pair_group}' if getattr(conf, "pair_split", False) else ''
-    fname_gw = f'{dirname}/num{conf.min_num}-{conf.max_num}_nl-{conf.noise_level}{trunc}{logscale}_{shapes}{distinctiveness}{challenge}{pair_suffix}_grid{conf.grid}_policy-{policy}_lum{conf.luminances}_{transform}{n_glimpses}{conf.size}'
+    dirname = 'datasets/image_sets_curriculum'
+    if getattr(conf, "curriculum_cfg", None) is not None:
+        fname_gw = build_curriculum_filename(
+            curriculum=conf.curriculum,
+            dataset_split=conf.dataset_split,
+            test_condition=conf.test_condition,
+            active_n_total_values=conf.active_n_total_values,
+            noise_level=conf.noise_level,
+            shapes=shapes,
+            distinctiveness=distinctiveness,
+            challenge=challenge,
+            grid=conf.grid,
+            policy=policy,
+            luminances=conf.luminances,
+            transform=transform,
+            n_glimpses=n_glimpses,
+            size=conf.size,
+            trunc=trunc,
+            logscale=logscale,
+            dirname=dirname,
+        )
+    else:
+        split_suffix = f'_pair-{conf.pair_group}' if getattr(conf, "pair_split", False) else ''
+        num_label = f'num{conf.min_num}-{conf.max_num}'
+        fname_gw = f'{dirname}/{num_label}_nl-{conf.noise_level}{trunc}{logscale}_{shapes}{distinctiveness}{challenge}{split_suffix}_grid{conf.grid}_policy-{policy}_lum{conf.luminances}_{transform}{n_glimpses}{conf.size}'
     if not os.path.isdir(fname_gw):
             os.makedirs(fname_gw)
             
@@ -1340,7 +1641,24 @@ def main():
     print(f'Saving {fname_gw}.nc')
     data.to_netcdf(fname_gw + '.nc')
 
-    if conf.pair_split:
+    if getattr(conf, "curriculum_cfg", None) is not None:
+        curriculum_log = {
+            "curriculum": conf.curriculum_cfg,
+            "dataset_split": conf.dataset_split,
+            "test_condition": conf.test_condition,
+            "train_n_total_values": conf.train_n_total_values_list,
+            "test_n_total_values": conf.test_n_total_values_list,
+            "inrange_n_values": conf.inrange_n_values,
+            "ood_n_values": conf.ood_n_values,
+            "active_n_total_values": conf.active_n_total_values,
+            "task_type": conf.task_type,
+            "task_restrictions": conf.task_restrictions,
+            "split_stats_by_k": conf.curriculum_split_stats,
+        }
+        log_path = Path(fname_gw).with_suffix(".curriculum.json")
+        with open(log_path, "w") as f:
+            json.dump(curriculum_log, f, indent=1)
+    elif conf.pair_split:
         pairs_log = {
         "pair_group": conf.pair_group,
         "pairs": conf.allowed_pairs,  
