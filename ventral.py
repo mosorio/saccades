@@ -719,6 +719,13 @@ def get_dataset_xr(dataframe, config):
     # shape_label25 = shape_label25.view((nrows, 25))
     shape_label = shape_label.view(nrows, -1)
 
+    if getattr(config, 'target_norm', 'none') == 'sum':
+        # Divisive normalization baked into the training target: relu first (matching
+        # DivisiveNorm's own pool=sum(relu(x)) convention -- the raw -log(distance) evidence can
+        # go slightly negative when distance > 1), then divide by each glimpse's own total.
+        z = torch.relu(shape_label)
+        shape_label = z / (z.sum(dim=-1, keepdim=True) + 1e-6)
+
     # Check for NaNs and package as TensorDataset
     if not(torch.isfinite(shape_input).all() and torch.isfinite(shape_label).all()):
         print('Found NaNs in the inputs or targets.')
@@ -827,6 +834,13 @@ def get_config():
     parser.add_argument('--multiclass', action='store_true', default=False,
     help='If set, ventral output size is restricted to the training shapes only')
     parser.add_argument('--policy', type=str, default='humanlike')
+    parser.add_argument('--target_norm', type=str, default='none', choices=['none', 'sum'],
+        help="If 'sum', each glimpse's symbolic_shape evidence vector is relu'd then divided by "
+             "its own row-sum (+ a small numerical eps) before being used as the MSE regression "
+             "target -- i.e. divisive normalization baked into the TRAINING TARGET itself (matching "
+             "DivisiveNorm's own pool=sum(relu(x)) convention), rather than applied as a separate "
+             "layer on the frozen output afterward. Default 'none' preserves the original raw, "
+             "unbounded -log(distance) target.")
 
     config = parser.parse_args()
     # Convert string input argument into a list of indices
@@ -881,7 +895,8 @@ def main():
     shapes = ''.join([str(i) for i in config.shapestr])
     data_desc = f'num{min_num}-{max_num}_nl-{noise_level}_diff-{min_pass}-{max_pass}_grid{config.grid}_policy-{config.policy}_lum-{config.lums}_trainshapes-{shapes}{same}_{challenge}_{transform}{train_size}'
     train_desc = f'loss-{config.loss}_opt-{config.opt}_drop{drop}_{sort}{n_epochs}eps_rep{config.rep}'
-    base_name = f'{model_desc}_{data_desc}_{train_desc}'
+    target_norm_tag = f'_targetnorm-{config.target_norm}' if getattr(config, 'target_norm', 'none') != 'none' else ''
+    base_name = f'{model_desc}_{data_desc}_{train_desc}{target_norm_tag}'
     config.base_name = base_name
 
     # make sure all results directories exist
