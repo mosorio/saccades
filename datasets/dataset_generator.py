@@ -224,7 +224,7 @@ class DatasetGenerator:
         self.map_scale_pixel = {scaled:pixel for scaled,pixel in zip(self.possible_centroids, self.pixel_topleft)}
         self.grid_size = len(self.possible_centroids)
          
-    def get_xy_coords(self, numerosity, n_distract, noise_level, challenge, policy):
+    def get_xy_coords(self, numerosity, n_distract, noise_level, challenge, policy, config=None):
         """Randomly select n spatial locations and take noisy observations of them.
 
         Objects are placed on a grid within a 1x1 square. In the case of a 3x3
@@ -304,6 +304,23 @@ class DatasetGenerator:
             if policy == 'all_slots':
                 assert self.n_glimpses == len(self.possible_centroids)
                 glimpsed_objects = [i for i in range(len(self.possible_centroids))]
+                random.shuffle(glimpsed_objects)
+                coords_glimpsed_objects = [self.possible_centroids[object] for object in glimpsed_objects]
+            elif getattr(config, 'revisit_with_replacement', False):
+                # Each glimpse is associated with an object idx. First pass guarantees
+                # every object is glimpsed at least once; remaining glimpses are drawn
+                # i.i.d. with replacement from all objects -- matches the small model's
+                # sample_loc_sequence_cover_all_occupied (simpleRNN_dataset.py), which
+                # samples extra visits with replacement rather than tiling full repeats.
+                first_pass = all_objects.copy()
+                random.shuffle(first_pass)
+                n_remaining = n_glimpses - len(first_pass)
+                if n_remaining > 0:
+                    glimpse_candidates = first_pass + random.choices(all_objects, k=n_remaining)
+                else:
+                    glimpse_candidates = first_pass
+
+                glimpsed_objects = glimpse_candidates[:n_glimpses]
                 random.shuffle(glimpsed_objects)
                 coords_glimpsed_objects = [self.possible_centroids[object] for object in glimpsed_objects]
             else:
@@ -660,6 +677,11 @@ class DatasetGenerator:
         else:
             self.xy_max_dist = None
             self.shape_max_dist = 3*(noise_level*0.1) # 3 standard deviations, 0.22
+        if getattr(config, 'what_symbolic_radius', None) is not None:
+            # Explicit radius overrides the legacy noise_level-derived one above --
+            # only the "what" evidence radius changes, xy_max_dist (glimpse-position
+            # truncation, a separate concern) is left as set by the truncate branch.
+            self.shape_max_dist = config.what_symbolic_radius
         # 0.12727922061357858
         # min_pass_count, max_pass_count = pass_count_range
         # num_low, num_high = num_range
@@ -672,7 +694,7 @@ class DatasetGenerator:
         # Otherwise, range set to be inclusive. That way don't need to bother with setting those cli arguments when not relevant
         # while final_pass_count < min_pass_count or final_pass_count > max_pass_count:
         # print(f'Generating example with num: {num}, n_distract: {n_disract}, n_unique: {n_unique}, shapes_set: {shapes_set}, distinctiveness: {distinctiveness}, challenge: {challenge}, policy: {policy}')
-        xy_coords, objects, noiseless_coords, to_count, distractors = self.get_xy_coords(num, n_disract, noise_level, challenge, policy)
+        xy_coords, objects, noiseless_coords, to_count, distractors = self.get_xy_coords(num, n_disract, noise_level, challenge, policy, config=config)
         # print(f'num: {num}, objects: {objects}, to_count: {to_count}, distractors: {distractors}')
         forced_shape_assign = None if scene_spec is None else scene_spec['shape_assign']
         shape_coords, shape_map, shape_hist = self.get_shape_coords(
@@ -1376,6 +1398,17 @@ def main():
     parser.add_argument('--constant_contrast', action='store_true', default=False)
     parser.add_argument('--truncate', action='store_true', default=False)
     parser.add_argument('--logscale', action='store_true', default=False)
+    parser.add_argument('--what_symbolic_radius', type=float, default=None,
+        help='Max distance (in the 1x1 scene coordinate space) within which an object '
+             'contributes evidence to a glimpse\'s symbolic "what" vector. None (default) '
+             'falls back to the legacy noise_level-derived radius (~0.22 at noise_level=0.74, '
+             'a tight ~1-ring-neighbor radius on a 6x6 grid). ~0.665 matches the small '
+             'model\'s radius expressed as a fraction of slot spacing (~4.15 slot-widths).')
+    parser.add_argument('--revisit_with_replacement', action='store_true', default=False,
+        help='After the guaranteed first-pass glimpse at every object, sample any remaining '
+             'glimpses i.i.d. with replacement from all objects, matching the small model\'s '
+             'sample_loc_sequence_cover_all_occupied. Default (off) keeps the legacy behavior '
+             'of tiling full shuffled repeats of all objects and truncating to n_glimpses.')
     # parser.add_argument('--distract', action='store_true', default=False)
     # parser.add_argument('--distract_corner', action='store_true', default=False)
     # parser.add_argument('--random', action='store_true', default=False)
@@ -1410,10 +1443,12 @@ def main():
              'Overrides --n_total_values for the test split. Values also present in the train '
              'split define the "in-range" condition; values absent from it define the "OOD-N" condition.')
     parser.add_argument('--test_condition', type=str, default='',
-        choices=['', 'ood_combo_inrange_n', 'ood_combo_ood_n', 'seen_combo_ood_n'],
-        help='Which named OOD test condition to generate. Required when --curriculum is set and '
+        choices=['', 'ood_combo_inrange_n', 'ood_combo_ood_n', 'seen_combo_ood_n', 'seen_combo_inrange_n'],
+        help='Which named test condition to generate. Required when --curriculum is set and '
              '--dataset_split test. ood_combo_inrange_n: heldout combos x in-range N. '
-             'ood_combo_ood_n: heldout combos x OOD N. seen_combo_ood_n: trained combos x OOD N.')
+             'ood_combo_ood_n: heldout combos x OOD N. seen_combo_ood_n: trained combos x OOD N. '
+             'seen_combo_inrange_n: trained combos x in-range N (a fresh "validation" sample from '
+             'the same distribution as training).')
 
     conf = parser.parse_args()
 
@@ -1457,6 +1492,7 @@ def main():
     conf = process_args(conf)  # make sure this line is after 'shapes =' above
     trunc = 'trunc' if conf.truncate else ''
     logscale = '_logscale' if conf.logscale else ''
+    revisit = '_revisitwr' if getattr(conf, 'revisit_with_replacement', False) else ''
     conf.task_restrictions = get_task_restrictions(conf.task_type)
     default_n_total_values = (
         [int(v) for v in conf.n_total_values]
@@ -1516,7 +1552,8 @@ def main():
             if not conf.test_condition:
                 raise ValueError(
                     "--test_condition is required when --curriculum is set and --dataset_split=test. "
-                    "Choose one of: ood_combo_inrange_n, ood_combo_ood_n, seen_combo_ood_n"
+                    "Choose one of: ood_combo_inrange_n, ood_combo_ood_n, seen_combo_ood_n, "
+                    "seen_combo_inrange_n"
                 )
             if conf.test_condition == 'ood_combo_inrange_n':
                 if not conf.inrange_n_values:
@@ -1534,13 +1571,21 @@ def main():
                     )
                 conf.active_n_total_values = conf.ood_n_values
                 conf.allowed_combinations_by_k = conf.combo_splits_by_k['test']
-            else:  # seen_combo_ood_n
+            elif conf.test_condition == 'seen_combo_ood_n':
                 if not conf.ood_n_values:
                     raise ValueError(
                         "No OOD N values available (test_n_total_values has no values outside "
                         "train_n_total_values) -- cannot build the 'seen_combo_ood_n' condition."
                     )
                 conf.active_n_total_values = conf.ood_n_values
+                conf.allowed_combinations_by_k = conf.combo_splits_by_k['train']
+            else:  # seen_combo_inrange_n
+                if not conf.inrange_n_values:
+                    raise ValueError(
+                        "No in-range N values available (test_n_total_values has no overlap with "
+                        "train_n_total_values) -- cannot build the 'seen_combo_inrange_n' condition."
+                    )
+                conf.active_n_total_values = conf.inrange_n_values
                 conf.allowed_combinations_by_k = conf.combo_splits_by_k['train']
     elif conf.pair_split:
         labels = conf.shapes
@@ -1600,12 +1645,13 @@ def main():
             size=conf.size,
             trunc=trunc,
             logscale=logscale,
+            revisit=revisit,
             dirname=dirname,
         )
     else:
         split_suffix = f'_pair-{conf.pair_group}' if getattr(conf, "pair_split", False) else ''
         num_label = f'num{conf.min_num}-{conf.max_num}'
-        fname_gw = f'{dirname}/{num_label}_nl-{conf.noise_level}{trunc}{logscale}_{shapes}{distinctiveness}{challenge}{split_suffix}_grid{conf.grid}_policy-{policy}_lum{conf.luminances}_{transform}{n_glimpses}{conf.size}'
+        fname_gw = f'{dirname}/{num_label}_nl-{conf.noise_level}{trunc}{logscale}{revisit}_{shapes}{distinctiveness}{challenge}{split_suffix}_grid{conf.grid}_policy-{policy}_lum{conf.luminances}_{transform}{n_glimpses}{conf.size}'
     if not os.path.isdir(fname_gw):
             os.makedirs(fname_gw)
             

@@ -68,6 +68,18 @@ def get_base_name(config):
     base_name = f'{model_desc}_{data_desc}_{train_desc}'
     # if config.small_weights:
     #     base_name += '_small'
+
+    # Durable safety net: every optional tag folded into base_name over time (rnn_tag,
+    # wdn_tag, sme_tag, cw_tag, ...) shrinks the margin before this hits the OS filename
+    # length limit (255 bytes) -- already patched 3 times at individual save call sites
+    # (config sidecar JSON, counttask results, test_results). Fix it here instead, once,
+    # so no future save site can hit it again: fall back to a short, deterministic hash
+    # when the full descriptive name would be unsafely long. Keeps a few identifying
+    # fields (model_type, h_size) so it's not completely opaque, even in the fallback.
+    max_safe_len = 180
+    if len(base_name) > max_safe_len:
+        short_hash = hashlib.md5(base_name.encode()).hexdigest()[:12]
+        base_name = f'{model_type}_hsize-{config.h_size}_{short_hash}'
     return base_name
 
 
@@ -131,6 +143,31 @@ def get_config():
     parser.add_argument('--no_glimpse', action='store_true', default=False)
     parser.add_argument('--truncate', action='store_true', default=False)
     parser.add_argument('--logscale', action='store_true', default=False)
+    parser.add_argument('--what_symbolic_radius', type=float, default=None,
+        help='Max distance (in the 1x1 scene coordinate space) within which an object '
+             'contributes evidence to a glimpse\'s symbolic "what" vector. None (default) '
+             'falls back to the legacy noise_level-derived radius (3*noise_level*0.1, e.g. '
+             '~0.22 at noise_level=0.74 -- a tight ~1-ring-neighbor radius on a 6x6 grid). '
+             'For grid=6, ~0.665 matches the small model\'s radius when expressed as a '
+             'fraction of slot spacing (~4.15 slot-widths, vs. ~1.4 for the legacy default).')
+    parser.add_argument('--revisit_with_replacement', action='store_true', default=False,
+        help='Dataset-generation-time flag, inert at train time -- only read here so the '
+             'sidecar config and the reconstructed dataset filename (loaders.py) stay in sync '
+             'with how datasets/dataset_generator.py built the file. See that file\'s own '
+             '--revisit_with_replacement for the actual behavior.')
+    parser.add_argument('--trim_what_input', action='store_true', default=False,
+        help='Only used by RNNClassifier2stream with --small_model_encoder. Trims the "what" '
+             'content vector fed to the joint encoder down to just the real shape classes '
+             '(indices 1..n_shapes-1), dropping the always-zero padding from --n_shapes being '
+             'wider than the actual number of shapes in use (e.g. 25 vs 8 real classes). Default '
+             'False preserves the legacy behavior of feeding the full padded vector.')
+    parser.add_argument('--no_shuffle_glimpses', dest='shuffle_glimpses', action='store_false', default=True,
+        help='Training-time flag (trainers.py). By default (True), the 22-glimpse sequence is '
+             're-shuffled on every training batch, but test() always uses the order stored in the '
+             'dataset file -- a train/eval order mismatch the small model does not have (it fixes '
+             'one random order per trial at generation time and reuses it identically for train '
+             'and eval). Pass --no_shuffle_glimpses to disable the train-time reshuffle and match '
+             'that behavior.')
 
 
     # Once loaded, how to prepare the data for training. What goes into the loaders?
@@ -207,6 +244,10 @@ def get_config():
     # Hardware
     parser.add_argument('--no_cuda', action='store_true', default=False, help='if True, run the model on the cpu instead of gpu.')
     parser.add_argument('--gpu', type=int, default=0, help='which gpu to use')
+    parser.add_argument('--dry_run', action='store_true', default=False,
+        help='Write the base_name + sidecar config JSON and exit, skipping training entirely '
+             '-- e.g. to get a valid base_name for oracle-only posthoc evaluation, which needs '
+             'no trained model.')
 
 
     config = parser.parse_args()

@@ -224,5 +224,10 @@ if __name__ == '__main__':
     with open(config_path, "w") as f:
         json.dump(vars(config), f, indent=2, sort_keys=True)
 
-    config.device = set_device(config)
-    main(config)
+    if config.dry_run:
+        # Just want the sidecar config + base_name (e.g. for oracle-only posthoc
+        # evaluation, which needs no trained model) -- skip training entirely.
+        print(f'--dry_run: wrote {config_path}, base_name={base_name}. Skipping training.')
+    else:
+        config.device = set_device(config)
+        main(config)

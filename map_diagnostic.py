@@ -223,7 +223,52 @@ def compute_shape_map_accuracies(pred_shape_map: np.ndarray, target_shape_map: n
         "per_location_accuracies": per_location_acc,
         "strict_accuracy": strict_acc
     }
-    
+
+
+def build_oracle_map(locations_class_index, n_classes):
+    """One-hot ground-truth map from locations_class_index, shaped identically
+    to a model's predicted map_logits (B, n_classes, n_slots) -- so the same
+    downstream heads/baselines can consume either source interchangeably.
+    Pass the model's own n_shapes (map_classes+1) as n_classes, not a
+    per-batch-derived count."""
+    idx = np.asarray(locations_class_index, dtype=np.int64)
+    one_hot = np.eye(n_classes, dtype=np.float32)[idx]   # (B, n_slots, n_classes)
+    return one_hot.transpose(0, 2, 1)                     # (B, n_classes, n_slots)
+
+
+def _counts_per_shape(map_tensor):
+    """Per-class counts via argmax per slot -- shared first step for every baseline."""
+    pred_classes = np.argmax(map_tensor, axis=1)          # (B, n_slots)
+    n_classes = map_tensor.shape[1]
+    return np.stack([(pred_classes == c).sum(axis=1) for c in range(n_classes)], axis=1)  # (B, n_classes)
+
+
+def argmax_total(map_tensor, absence_class=0):
+    """Total object count: sum of per-shape counts, absence excluded."""
+    counts = _counts_per_shape(map_tensor)
+    shape_idx = [c for c in range(counts.shape[1]) if c != absence_class]
+    return counts[:, shape_idx].sum(axis=1)
+
+
+def argmax_each(map_tensor, absence_class=0):
+    """Per-shape count vector, absence excluded."""
+    counts = _counts_per_shape(map_tensor)
+    shape_idx = [c for c in range(counts.shape[1]) if c != absence_class]
+    return counts[:, shape_idx]
+
+
+def argmax_min(map_tensor, absence_class=0):
+    """Min count among shapes actually present (count > 0)."""
+    each = argmax_each(map_tensor, absence_class=absence_class)
+    return np.array([row[row > 0].min() if np.any(row > 0) else 0 for row in each])
+
+
+def argmax_max(map_tensor, absence_class=0):
+    """Max count among shapes actually present (count > 0)."""
+    each = argmax_each(map_tensor, absence_class=absence_class)
+    return np.array([row.max() if np.any(row > 0) else 0 for row in each])
+
+
 def to_iterable(x):
     """
     Convert input x to an iterable (list).

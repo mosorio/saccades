@@ -52,6 +52,7 @@ def choose_model(config, model_dir):
                 'rnn_type': getattr(config, 'rnn_type', 'vanilla'),
                 'use_layernorm': getattr(config, 'use_layernorm', False),
                 'small_model_encoder': getattr(config, 'small_model_encoder', False),
+                'trim_what_input': getattr(config, 'trim_what_input', False),
                 'xy_preencode_size': getattr(config, 'xy_preencode_size', 64),
                 'joint_hidden_size': getattr(config, 'joint_hidden_size', 256),
                 }
@@ -312,6 +313,128 @@ class MapHead(nn.Module):
         return self.map_gen(h).view(B, self.n_classes, self.n_slots)
 
 
+def _build_mlp(in_size, hidden_sizes):
+    """Stacked Linear+ReLU, kaiming-relu-tuned init + zero bias per layer."""
+    layers = []
+    width = in_size
+    for out_size in hidden_sizes:
+        lin = nn.Linear(width, out_size)
+        nn.init.kaiming_uniform_(lin.weight, a=0.0, nonlinearity='relu')
+        nn.init.zeros_(lin.bias)
+        layers += [lin, nn.ReLU()]
+        width = out_size
+    return nn.Sequential(*layers), width
+
+
+class CountRegressionFromMapHead(nn.Module):
+    """Total-count regression head (`total_reg`). Reads a (B, n_classes, n_slots)
+    map tensor -- oracle one-hot or predicted map_logits; the caller decides
+    whether to .detach() first (not done here), so this same class works for
+    posthoc evaluation now and end-to-end training later without changes."""
+    def __init__(self, n_classes, n_slots, hidden=(512, 256, 128), absence_class=0):
+        super().__init__()
+        self.absence_class = absence_class
+        self._shape_idx = [c for c in range(n_classes) if c != absence_class]
+        in_size = len(self._shape_idx) * n_slots
+        self.trunk, trunk_out = _build_mlp(in_size, hidden)
+        self.out = nn.Linear(trunk_out, 1)
+
+    def forward(self, map_tensor):
+        x = map_tensor[:, self._shape_idx, :].reshape(map_tensor.shape[0], -1)
+        return self.out(self.trunk(x)).squeeze(-1)
+
+
+class CountEachFromMapHead(nn.Module):
+    """Per-shape count regression head (`each_reg`), same convention as
+    CountRegressionFromMapHead."""
+    def __init__(self, n_classes, n_slots, hidden=(512, 256, 128), absence_class=0):
+        super().__init__()
+        self.absence_class = absence_class
+        self._shape_idx = [c for c in range(n_classes) if c != absence_class]
+        in_size = len(self._shape_idx) * n_slots
+        self.trunk, trunk_out = _build_mlp(in_size, hidden)
+        self.out = nn.Linear(trunk_out, len(self._shape_idx))
+
+    def forward(self, map_tensor):
+        x = map_tensor[:, self._shape_idx, :].reshape(map_tensor.shape[0], -1)
+        return self.out(self.trunk(x))
+
+
+class SetTransformerScalarHead(nn.Module):
+    """Permutation-invariant scalar regression over a set of per-element features.
+
+    Ported from the small model's SetTransformerScalarHead (runners/run_count_head_diagnostic.py):
+    a shared `phi` MLP embeds each set element independently, stacked single-head
+    self-attention blocks let elements attend to each other (needed for relational
+    targets like "smallest nonzero count" that a plain sum-pooled Deep-Sets head
+    cannot represent), the attended embeddings are sum-pooled over the set, and a
+    `rho` MLP maps the pooled representation to the scalar output.
+    """
+    def __init__(self, phi=(64, 32), attention=(16,), rho=(), n_heads=1, per_element_dim=1, output_dim=1):
+        super().__init__()
+        if not attention:
+            raise ValueError("SetTransformerScalarHead requires a non-empty attention spec")
+        embed_dim = phi[-1] if phi else attention[0]
+        if phi:
+            self.phi, _ = _build_mlp(per_element_dim, phi)
+        else:
+            if embed_dim != per_element_dim:
+                raise ValueError("phi must be non-empty unless attention width equals per_element_dim")
+            self.phi = nn.Identity()
+
+        self.attn_proj = nn.ModuleList()
+        self.attn_blocks = nn.ModuleList()
+        d = embed_dim
+        for width in attention:
+            self.attn_proj.append(nn.Linear(d, width) if d != width else None)
+            self.attn_blocks.append(nn.MultiheadAttention(embed_dim=width, num_heads=n_heads, batch_first=True))
+            d = width
+        self.pooled_dim = d
+
+        self.rho_trunk, rho_out = _build_mlp(d, rho)
+        self.rho_out = nn.Linear(rho_out, output_dim)
+
+    def _pool(self, x):
+        """x: (B, set_size, per_element_dim) -> pooled (B, pooled_dim), before rho."""
+        h = self.phi(x)
+        for proj, attn in zip(self.attn_proj, self.attn_blocks):
+            if proj is not None:
+                h = proj(h)
+            attn_out, _ = attn(h, h, h, need_weights=False)
+            h = torch.relu(h + attn_out)
+        return h.sum(dim=1)
+
+    def rho(self, pooled):
+        return self.rho_out(self.rho_trunk(pooled))
+
+    def forward(self, x):
+        return self.rho(self._pool(x))
+
+
+class CountMinMaxFromMapHead(nn.Module):
+    """Permutation-invariant min/max count head (`min_reg`/`max_reg`), matching the
+    small model's ShapeSetReadoutHead with head_type='set_transformer' (the only
+    variant it actually uses for min/max -- see task_defaults.py's
+    _COUNT_SET_TRANSFORMER). Each of the non-absence shape classes is one set
+    element; its feature is that shape's full distribution across all map slots
+    (per_element_dim=n_slots), so the head learns the counting/argmin-argmax logic
+    directly from the per-slot map rather than from a hand-computed count-each
+    intermediate. Absence is excluded by index rather than always-last, since this
+    pipeline encodes absence as class 0, not the last class (see loaders.py)."""
+    def __init__(self, n_classes, n_slots, phi=(64, 32), attention=(16,), rho=(), n_heads=1, absence_class=0):
+        super().__init__()
+        self.absence_class = absence_class
+        self._shape_idx = [c for c in range(n_classes) if c != absence_class]
+        self.set_transformer = SetTransformerScalarHead(
+            phi=phi, attention=attention, rho=rho, n_heads=n_heads,
+            per_element_dim=n_slots, output_dim=1,
+        )
+
+    def forward(self, map_tensor):
+        x = map_tensor[:, self._shape_idx, :]  # (B, n_shapes, n_slots) -- shapes are the set elements
+        return self.set_transformer(x).squeeze(-1)
+
+
 class CountingHead(nn.Module):
     def __init__(self, hidden_dim, map_dim, n_shapes, n_counts, mode='total'):
         super().__init__()
@@ -398,6 +521,13 @@ class RNNClassifier2stream(nn.Module):
         self.use_layernorm = kwargs.get('use_layernorm', False)
         self.small_model_encoder = kwargs.get('small_model_encoder', False)
         self.xy_preencode_size = kwargs.get('xy_preencode_size', 64)
+        # If True, the "what" content vector fed to the joint encoder is trimmed to just the
+        # n_shapes-1 real shape classes (indices 1..n_shapes-1 -- index 0 and anything beyond
+        # n_shapes-1 are always exactly zero, since class 0 is reserved for absence and is never
+        # assigned to a real object). Default False preserves the legacy behavior of feeding the
+        # full, mostly-dead-padded pix_size-wide vector (e.g. 25 dims when only 8 are ever live).
+        # The small model's content stream has no such padding (content_size == real class count).
+        self.trim_what_input = kwargs.get('trim_what_input', False)
         # Divisive normalization on the raw content ('what') stream, applied
         # before its embedding into the RNN input. 'none' disables it entirely.
         what_divisive_norm = kwargs.get('what_divisive_norm', 'none')
@@ -428,7 +558,8 @@ class RNNClassifier2stream(nn.Module):
             joint_widths = kwargs.get('joint_hidden_size', None)
             self.joint_hidden_size = list(joint_widths) if joint_widths is not None else [256, hidden_size]
             self.joint_layers = nn.ModuleList()
-            in_width = pix_size + self.xy_preencode_size
+            effective_pix_size = (self.n_shapes - 1) if self.trim_what_input else pix_size
+            in_width = effective_pix_size + self.xy_preencode_size
             for out_width in self.joint_hidden_size:
                 self.joint_layers.append(nn.Linear(in_width, out_width))
                 in_width = out_width
@@ -509,6 +640,8 @@ class RNNClassifier2stream(nn.Module):
                 pix = self.content_norm(pix)
 
             if self.small_model_encoder:
+                if self.trim_what_input:
+                    pix = pix[:, 1:self.n_shapes]
                 xy_enc = torch.relu(self.xy_preencoder(xy))
                 combined = torch.cat((pix, xy_enc), dim=-1)
                 for layer in self.joint_layers:

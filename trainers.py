@@ -194,13 +194,21 @@ class Trainer():
         elif config.opt == 'Adam':
             # start_lr = 0.01 if config.use_loss == 'num' else 0.001
             start_lr = custom_lr if custom_lr is not None else 0.001
-            self.optimizer = AdamW(model.parameters(), weight_decay=config.wd, amsgrad=True, lr=start_lr)
+            # amsgrad=False (PyTorch's default) to match the small model's AdamW call, which
+            # passes no amsgrad kwarg.
+            self.optimizer = AdamW(model.parameters(), weight_decay=config.wd, amsgrad=False, lr=start_lr)
             self.scheduler = None if lr_schedule == 'flat' else StepLR(self.optimizer, step_size=config.n_epochs/20, gamma=0.7)
         else:
             print('Selected optimizer not implemented')
             exit()
 
-        self.shuffle = True  # Whether the sequence of glimpses should be reshuffled on each epoch
+        # Whether the glimpse sequence gets re-shuffled on every training batch (train() only --
+        # test() always uses the order stored in the dataset file). Default True preserves legacy
+        # behavior; the small model has no equivalent runtime reshuffle (it fixes one random order
+        # per trial at generation time and uses it identically for train and eval), so this flag
+        # exists to test whether that train/eval order mismatch matters, especially at OOD-N where
+        # each object gets few enough glimpses that presentation order carries real information.
+        self.shuffle = getattr(config, 'shuffle_glimpses', True)
 
         self.nclasses = self.model.output_size
         if 'unique' in config.challenge:

@@ -136,6 +136,7 @@ def get_curriculum_dataset(config, dataset_split, test_condition=None):
 
     trunc = 'trunc' if config.truncate else ''
     logscale = '_logscale' if config.logscale else ''
+    revisit = '_revisitwr' if getattr(config, 'revisit_with_replacement', False) else ''
 
     active_n_total_values = resolve_active_n_total_values(
         config.train_n_total_values_list, config.test_n_total_values_list,
@@ -158,6 +159,7 @@ def get_curriculum_dataset(config, dataset_split, test_condition=None):
         size=config.curriculum_train_size if dataset_split == 'train' else config.curriculum_test_size,
         trunc=trunc,
         logscale=logscale,
+        revisit=revisit,
     )
 
     if not os.path.exists(fname + '.nc'):
@@ -795,7 +797,7 @@ def choose_loader(config):
         train_loader = get_loader(trainset, config, gaze='free')
 
         test_loaders = []
-        for condition in ('ood_combo_inrange_n', 'ood_combo_ood_n', 'seen_combo_ood_n'):
+        for condition in ('ood_combo_inrange_n', 'ood_combo_ood_n', 'seen_combo_ood_n', 'seen_combo_inrange_n'):
             testset = get_curriculum_dataset(config, 'test', test_condition=condition)
             loader = get_loader(testset, config, batch_size=2500, gaze='free')
             loader.testset = condition
