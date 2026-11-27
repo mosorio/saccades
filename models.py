@@ -215,12 +215,18 @@ class PretrainedVentral(nn.Module):
         if not no_pretrain:
             print('Loading saved ventral model parameters...')
             map_location = torch.device('cpu')
+            # weights_only=False: these are whole-model pickles (torch.load must return a
+            # ventral_models.ConvNet object, not a state_dict), and PyTorch >=2.6 changed the
+            # default to weights_only=True, which refuses to unpickle arbitrary classes like
+            # ventral_models.ConvNet unless explicitly told the source is trusted (it is -- we
+            # created these checkpoints ourselves). Harmless on older PyTorch, where this was
+            # already the default.
             try:  # Try loading the whole model first, this is the way to go in case we make changes to the ventral model
-                self.ventral = torch.load(ventral_file, map_location=map_location)
+                self.ventral = torch.load(ventral_file, map_location=map_location, weights_only=False)
                 if hasattr(self.ventral, 'penult_size'):
                     assert self.ventral.penult_size == penult_size
             except:  # Otherwise just load the state variables. Assumes the same architecture as initialized above.
-                state_dict = torch.load(ventral_file, map_location=map_location)
+                state_dict = torch.load(ventral_file, map_location=map_location, weights_only=False)
                 self.ventral.load_state_dict(state_dict)
 
         self.rnn = RNNClassifier2stream(shape_rep_len, hidden_size, map_size, output_size, **kwargs)
