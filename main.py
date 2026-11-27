@@ -209,8 +209,7 @@ if __name__ == '__main__':
     """
     config = get_config()
 
-    config_dir = Path("/Users/mosorio/Documents/ChrisWork/saccades/datasets/config_dir")
-    # config_dir = Path("/mnt/quick/maria/saccades/datasets/config_dir")
+    config_dir = Path("datasets/config_dir")  # relative to the working directory the script is run from
     config_dir.mkdir(parents=True, exist_ok=True)
 
     # One file per run (named like the results/model files), not a single shared file --
